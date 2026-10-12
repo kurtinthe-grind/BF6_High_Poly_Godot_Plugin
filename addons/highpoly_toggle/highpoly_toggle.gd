@@ -14,16 +14,10 @@ extends EditorPlugin
 # keeps only the RID: if the last reference dies, the global points at freed
 # memory and the next terrain-blend material to draw takes the editor down.
 var _ground_white: Texture2D
-# The shared BF6 menu (menu bar, and the Extended Workspace radial when enabled).
-const PluginMenu := preload("bf6_plugin_menu.gd")
-var _menu_bindings: Dictionary = {}
 
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
 var dock_root: Control             # panel root: holds the scroller
-var win: Window                    # the floating tool panel itself
-var tools_btn: Button              # "High-Poly Tools" in the 3D viewport toolbar
-var _win_rect: Rect2i              # remembered across sessions; zero = never opened
 var tips: Control                  # hover descriptions, drawn inside the panel
 var _menu_sections: Dictionary = {}
 var sections: Array = []           # collapsible sections, in dock order
@@ -49,7 +43,6 @@ const HighpolyDoors = preload("highpoly_doors.gd")
 const GameDir = preload("highpoly_gamedir.gd")
 const Preparation = preload("highpoly_preparation.gd")
 var _preparation: VBoxContainer
-var _preparation_restore_float := false
 var _preparation_viewports: Array = []
 const HighpolyVariants = preload("highpoly_variants.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
@@ -315,7 +308,6 @@ func _build_bf6_gate() -> void:
 		fd.close_requested.connect(func(): fd.queue_free()))
 	_preparation = Preparation.new()
 	_preparation.foreground_owner = func(): return EditorInterface.get_base_control()
-	_preparation.popup_deferred = func(): return _panel_suppressed()
 	# High Poly stays locked until the up-front cache is complete.
 	_preparation.ready_changed.connect(func(_is_ready: bool): _apply_bf6_gate())
 	_preparation.editing_lock_changed.connect(func(locked: bool):
@@ -327,15 +319,8 @@ func _build_bf6_gate() -> void:
 					if viewport != null:
 						viewports.append(viewport)
 				_preparation_viewports = Preparation.Screen.suspend_viewports(viewports)
-			_preparation_restore_float = is_instance_valid(win) and win.visible
-			if _preparation_restore_float:
-				win.hide()
 		else:
-			Preparation.Screen.restore_viewports(_preparation_viewports)
-			if _preparation_restore_float and is_instance_valid(win):
-				_preparation_restore_float = false
-				if _panel_suppressed(): _win_held_for_home = true
-				else: win.show())
+			Preparation.Screen.restore_viewports(_preparation_viewports))
 	_preparation.current_level = func():
 		var scene := EditorInterface.get_edited_scene_root()
 		if scene == null:
@@ -554,7 +539,6 @@ func _enter_tree() -> void:
 	# Configure before any theme lookup; nested installs must read their own
 	# shipped menu and palette rather than another add-on at the default path.
 	SharedMenu.configure(get_script().resource_path.get_base_dir())
-	_register_bf6_menu.call_deferred()
 	# The terrain-blend GLOBAL shader parameters, registered before any prop
 	# material can compile against them. Session-only (RenderingServer, not
 	# ProjectSettings), so nothing is written into the user's project; the map
@@ -1617,7 +1601,6 @@ All of it is read from your own Battlefield 6 installation."
 		"variant": SharedMenu.binding(mapctx_variant, mapctx_variant_row, mv_lbl),
 		"configure_shaders": SharedMenu.binding(shader_btn),
 	}
-	_menu_bindings = menu_bindings
 	var menu_gaps := SharedMenu.apply(dock, _menu_sections, menu_groups, menu_bindings)
 	if not menu_gaps.is_empty():
 		push_warning("High-poly menu adapter gaps: " + ", ".join(menu_gaps))
@@ -1676,7 +1659,7 @@ All of it is read from your own Battlefield 6 installation."
 	dock_root = Control.new()
 	dock_root.name = "High-Poly"
 	dock_root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# The editor's own panel background, so the floating window looks like any
+	# The editor's own panel background, so the dock tab looks like any
 	# other editor panel (the fork dropped the video backdrop, F-01).
 	var bg := Panel.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -1685,8 +1668,7 @@ All of it is read from your own Battlefield 6 installation."
 	dock_root.add_child(dock_scroll)
 	tips = TipsScript.new()
 	dock_root.add_child(tips)
-	_build_tool_window()
-	_join_home_chrome()
+	_add_dock()
 	# Undo what a KILLED bench run left in the user's editor settings. The bench
 	# harness is gone from the fork, but an older install that ran it may have
 	# left a park file with both idle sleeps at 0 - after which the editor
@@ -1715,7 +1697,6 @@ All of it is read from your own Battlefield 6 installation."
 		_log_line(int(r["lvl"]), str(r["m"]))
 	Log.info("Panel opened")
 	_adopt_tips.call_deferred()
-	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
 	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
 
@@ -2239,9 +2220,6 @@ func _settings_snapshot() -> PackedStringArray:
 
 
 func _exit_tree() -> void:
-	var bf6_menu := PluginMenu.find()
-	if bf6_menu != null:
-		bf6_menu.unregister_plugin("highpoly")
 	# The clean-exit marker. Its ABSENCE next session is what says the editor
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
@@ -2277,24 +2255,7 @@ func _exit_tree() -> void:
 		_keep_service("profiler", profiler)
 		_keep_service("jobs", jobs)
 		Log.hook(Callable())     # never call into a freed panel
-		if tools_btn:
-			remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
-			tools_btn.queue_free()
-			tools_btn = null
-		# A DOCKED CONTROL HAS TO BE TAKEN OUT BEFORE ITS OWNER GOES.
-		#
-		# win.free() takes dock_root with it only while dock_root is inside the
-		# window. Docked, it is parented into the editor's own dock column
-		# instead, so freeing the window leaves it sitting there - a tab
-		# belonging to a plugin that no longer exists, which survives into the
-		# editor's saved layout.
-		if _is_docked():
-			remove_control_from_docks(dock_root)
-			dock_root.queue_free()
-			dock_root = null
-		if win:
-			win.free()
-			win = null
+		_remove_dock(false)
 		return
 	# Their ground decal is a saved node we only ever HID; a plugin that is being
 	# switched off must not leave a piece of the user's scene invisible.
@@ -2316,28 +2277,23 @@ func _exit_tree() -> void:
 		HighpolyLib.restore(r)                             # overlays off, SDK proxies back
 	Log.hook(Callable())         # never call into a freed panel
 	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
-	if tools_btn:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
-		tools_btn.queue_free()
-		tools_btn = null
-	# Out of the dock column first, or freeing the window frees nothing: docked,
-	# dock_root is not the window's child and would be left behind as a tab
-	# belonging to a plugin that has been switched off.
-	if _is_docked():
-		remove_control_from_docks(dock_root)
-		dock_root.free()
-		dock_root = null
-	if win:
-		# free(), not queue_free(): teardown DOES run at editor shutdown, but the
-		# deferred queue is not flushed before the process exits, so a queued
-		# window is never actually freed. Measured — a leaked Viewport, Camera,
-		# Scenario, Environment, Canvas and CanvasItem at exit, all of which is
-		# one Window. Freeing here takes the panel root, the scroller and
-		# everything under them with it.
-		win.free()
-		win = null
-		dock_root = null
-		dock_scroll = null
+	_remove_dock(true)
+
+# A DOCKED CONTROL HAS TO BE TAKEN OUT BEFORE IT IS FREED, or it stays behind as
+# a tab belonging to a plugin that no longer exists and survives into the
+# editor's saved layout. free(), not queue_free(), on a real shutdown: teardown
+# does run at editor exit, but the deferred queue is not flushed before the
+# process ends, so a queued panel would be reported as leaked.
+func _remove_dock(now: bool) -> void:
+	if dock_root != null and is_instance_valid(dock_root):
+		if dock_root.get_parent() != null:
+			remove_control_from_docks(dock_root)
+		if now:
+			dock_root.free()
+		else:
+			dock_root.queue_free()
+	dock_root = null
+	dock_scroll = null
 
 # ---------- startup ----------
 func _startup() -> void:
@@ -2541,8 +2497,6 @@ func _capture_ui() -> Dictionary:
 		"photo": mapctx_photo.value if mapctx_photo != null else -1.0,
 		"variant": mapctx_variant.selected if mapctx_variant != null else -1,
 		"scroll": dock_scroll.scroll_vertical if dock_scroll != null else 0,
-		"open": win != null and win.visible,
-		"rect": Rect2i(win.position, win.size) if (win != null and win.visible) else Rect2i(),
 	}
 
 
@@ -2569,15 +2523,6 @@ func _apply_ui(d: Dictionary) -> void:
 	if mapctx_variant != null and vi >= 0 and vi < mapctx_variant.item_count:
 		mapctx_variant.select(vi)
 	_refresh_gates()
-	# The window is a child of the editor, not of the dock, so a reopen closes it
-	# and the launcher button comes back untoggled. Put it back where it was.
-	if bool(d.get("open", false)) and win != null:
-		var rc: Rect2i = d.get("rect", Rect2i())
-		if rc.size.x > 0:
-			_win_rect = rc
-		if tools_btn != null:
-			tools_btn.set_pressed_no_signal(true)
-		_set_tools_visible(true)
 	var sc := int(d.get("scroll", 0))
 	if dock_scroll != null and sc > 0:
 		# after the layout settles, or the scroller clamps it to a height the
@@ -2698,14 +2643,7 @@ func _plugin_version() -> String:
 		return "0.0.0"
 	return str(cf.get_value("plugin", "version", "0.0.0"))
 
-# ---------- the floating tool panel ----------
-# The tools live in their own window rather than an editor dock. Level building
-# needs the 3D viewport wide, and a right-hand dock permanently costs ~400px of
-# it; a panel you open, move to a second monitor and close again costs nothing
-# when it is shut. The launcher sits in the 3D viewport toolbar beside the SDK's
-# own "Apply Texture" button, so both plugins are found in the same place.
-const WIN_SIZE := Vector2i(440, 900)
-const WIN_MIN := Vector2i(340, 380)
+# ---------- panel layout ----------
 const PANEL_PAD := 16          # controls held off the outline, left/right
 const PANEL_PAD_V := 12        # ...and top/bottom
 
@@ -3138,237 +3076,41 @@ func _restore_section_state() -> void:
 		if is_instance_valid(sec) and ((want as Array).has(sec.title_lbl.text) or (want as Array).has(str(sec.get_meta("menu_id", "")))):
 			sec.set_open(true, false)
 
-func _build_tool_window() -> void:
-	win = Window.new()
-	win.title = "High-Poly Tools"
-	win.min_size = WIN_MIN
-	win.size = WIN_SIZE
-	# Stays above the editor when you click back into the viewport. It must not
-	# be transient to do that: the platform display server rejects always-on-top
-	# for a window that has a transient parent ("Transient windows can't become
-	# on top of parent"), and transient on its own only raises the panel
-	# alongside its parent, which is what let clicking the viewport bury it.
-	win.transient = false
-	win.always_on_top = true
-	win.exclusive = false      # never blocks the editor: keep building while it is open
-	win.hide()
-	win.close_requested.connect(_close_tools)
-	EditorInterface.get_base_control().add_child(win)
-	win.add_child(dock_root)
-
-	tools_btn = Button.new()
-	tools_btn.text = "High-Poly Tools"
-	tools_btn.flat = true
-	tools_btn.toggle_mode = true      # the button IS the panel's open/closed state
-	tools_btn.tooltip_text = "Open the High-Poly preview tools"
-	tools_btn.toggled.connect(_set_tools_visible)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
-
 # ---------------------------------------------------------------------------
-# TWO HOMES: the floating window, and a tab beside Inspector / Signals / Groups.
+# THE PANEL IS AN EDITOR DOCK TAB, always, from the moment the plugin is enabled.
 #
-# Closing the window used to just hide it, which threw the panel away until you
-# remembered the toolbar button. Docking instead keeps it to hand where every
-# other editor panel lives, and the toolbar button pops it back out to float.
+# It used to float in an always-on-top window opened from a 3D-toolbar button
+# and only docked itself when that window was closed. Two homes meant two sets
+# of state to persist, a window that covered BF6 Home, and a panel people had to
+# hunt for. Now it is added once, like Inspector or Signals, and the editor's
+# own layout remembers where the user dragged it.
 #
-# The panel itself never rebuilds. dock_root is one Control holding the whole
-# UI, and both homes are the same reparent - so the open reader, the built
-# overlay, the job queue and every toggle carry across untouched. That is the
-# same property the soft-reopen path depends on, for the same reason.
-# Right-hand column, lower half — the strip Inspector, Signals and Groups share.
-#
-# Which home the panel is in persists through _get_window_layout, the slice of
-# the editor's own layout file Godot hands plugins. Not project metadata: the
-# window rect and whether it was open already live there, and two places
-# remembering the same thing is how they end up disagreeing.
+# Right-hand column, lower half - the strip Inspector, Signals and Groups share.
+# Layouts saved by older builds still carry a [HighPoly] block (win_rect,
+# win_open, docked); nothing reads it any more, so it is simply ignored.
 const DOCK_SLOT := EditorPlugin.DOCK_SLOT_RIGHT_BL
 
 
-func _is_docked() -> bool:
-	return dock_root != null and is_instance_valid(dock_root) \
-		and win != null and dock_root.get_parent() != win
-
-
-# Move the panel into the editor's dock column. Idempotent.
-func _dock_panel() -> void:
-	if dock_root == null or not is_instance_valid(dock_root) or _is_docked():
+func _add_dock() -> void:
+	if dock_root == null or not is_instance_valid(dock_root):
 		return
-	if win != null and win.visible:
-		_win_rect = Rect2i(win.position, win.size)
-	if win != null:
-		win.hide()
-		if dock_root.get_parent() == win:
-			win.remove_child(dock_root)
-	# A DOCK IS A CONTAINER AND A WINDOW IS NOT, and this panel was built for the
-	# window. Inside a Window the FULL_RECT anchors set at creation do the
-	# sizing; inside a TabContainer anchors are ignored and the container sizes
-	# its child from the size flags instead - which were never set, because
-	# nothing had ever put this Control in a Container. Both homes now get what
-	# they need and neither disturbs the other: a Window ignores size flags
-	# exactly as a Container ignores anchors.
-	#
-	# dock_root.name is already "High-Poly" from _enter_tree, and that name is
-	# what the dock uses as the tab label.
+	# A dock is a Container: it sizes its child from the size flags, not anchors.
 	dock_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_root.custom_minimum_size = Vector2(260, 220)
 	add_control_to_dock(DOCK_SLOT, dock_root)
-	_stop_boot()
 
 
-# Take it back out of the dock and float it.
-func _float_panel() -> void:
-	if dock_root == null or not is_instance_valid(dock_root) or win == null:
+# Bring the panel's tab to the front (used by the caching service when BF6 Home
+# or another caller asks to see progress).
+func _focus_dock() -> void:
+	if dock_root == null or not is_instance_valid(dock_root):
 		return
-	if _is_docked():
-		remove_control_from_docks(dock_root)
-	if dock_root.get_parent() != win:
-		if dock_root.get_parent() != null:
-			dock_root.get_parent().remove_child(dock_root)
-		win.add_child(dock_root)
-
-
-func _set_tools_visible(on: bool) -> void:
-	if win == null: return
-	if not on:
-		# CLOSING DOCKS IT rather than hiding it. Nothing is lost and nothing is
-		# rebuilt; the panel is simply somewhere else.
-		_win_held_for_home = false
-		_dock_panel()
-		return
-	_float_panel()
-	# Opened while BF6 Home owns the editor (the first-run open, or enabling
-	# the plugin from Home itself): stay open, but appear when Home is left.
-	if _panel_suppressed():
-		_win_held_for_home = true
-		return
-	if _win_rect.size.x > 0 and _usable(_win_rect):
-		win.position = _win_rect.position
-		win.size = _win_rect.size
-	else:
-		# NOT popup_centered(): popup() force-sets transient, and the OS
-		# refuses a transient window that is always-on-top ("Windows with the
-		# 'on top' can't become transient", once per open). Centre by hand.
-		win.size = WIN_SIZE
-		var pw := EditorInterface.get_base_control().get_window()
-		win.position = pw.position + (pw.size - win.size) / 2
-	win.show()
-
-# ---------------------------------------------------------------------------
-# BF6 HOME OWNS THE EDITOR WHILE ITS MAP MENU IS SHOWN.
-#
-# The floating tools window is always-on-top, so without this it covered the
-# map menu. Home hides every editor dock and asks optional panels to step aside
-# through the shared "bf6_workspace_panels_v1" group (API v1). Home only asks
-# the panels it finds when it opens, and this plugin is usually enabled FROM
-# Home - after that - so the Home main screen is also followed directly.
-const HOME_PANELS_GROUP := "bf6_workspace_panels_v1"
-const HOME_SCREEN := "BF6 Home"
-var _home_suppressors: Dictionary = {}
-var _home_screen_shown := false
-var _win_held_for_home := false
-
-func get_api_version() -> int:
-	return 1
-
-func set_visibility_suppressed(requester: Object, suppressed: bool) -> void:
-	if requester == null: return
-	if suppressed: _home_suppressors[requester.get_instance_id()] = true
-	else: _home_suppressors.erase(requester.get_instance_id())
-	_apply_home_suppression()
-
-func _panel_suppressed() -> bool:
-	return _home_screen_shown or not _home_suppressors.is_empty()
-
-func _join_home_chrome() -> void:
-	add_to_group(HOME_PANELS_GROUP)
-	if not main_screen_changed.is_connected(_on_main_screen_changed):
-		main_screen_changed.connect(_on_main_screen_changed)
-	_home_screen_shown = _home_screen_visible_now()
-
-func _on_main_screen_changed(screen_name: String) -> void:
-	_home_screen_shown = screen_name == HOME_SCREEN
-	_apply_home_suppression()
-
-# No getter exists for the current main screen; Home's panel is the visible
-# main-screen child whose script belongs to the Home add-on.
-func _home_screen_visible_now() -> bool:
-	var main := EditorInterface.get_editor_main_screen()
-	if main == null: return false
-	for child in main.get_children():
-		var script: Script = child.get_script() if child is Control else null
-		if child.visible and script != null and script.resource_path.begins_with("res://addons/bf6_map_selection/"):
-			return true
-	return false
-
-func _apply_home_suppression() -> void:
-	if not _panel_suppressed() and _preparation != null and is_instance_valid(_preparation):
-		_preparation.show_deferred_screen()
-	if win == null or not is_instance_valid(win): return
-	if _panel_suppressed():
-		if win.visible and not _is_docked():
-			_win_rect = Rect2i(win.position, win.size)
-			_win_held_for_home = true
-			win.hide()
-	elif _win_held_for_home:
-		_win_held_for_home = false
-		if tools_btn != null and tools_btn.button_pressed:
-			_set_tools_visible(true)
-
-# Closing or docking the panel hides any open hover description. (The boot
-# sequence this used to stop is gone with the fork's F-01.)
-func _stop_boot() -> void:
+	var tabs := dock_root.get_parent() as TabContainer
+	if tabs != null:
+		tabs.current_tab = dock_root.get_index()
 	_tips_hide()
 
-func _close_tools() -> void:
-	# closing from the window's own X must not re-enter _set_tools_visible
-	if tools_btn: tools_btn.set_pressed_no_signal(false)
-	# The X docks it, same as untoggling the button. _dock_panel records the
-	# window rect on the way out, so floating it again lands where you left it.
-	_dock_panel()
-
-# A remembered position is only good while that monitor still exists. Unplug a
-# second screen and a restored panel would open onto coordinates nothing can
-# reach, looking exactly like the button doing nothing.
-func _usable(r: Rect2i) -> bool:
-	var probe := r.position + Vector2i(mini(40, r.size.x / 2), 10)
-	for i in range(DisplayServer.get_screen_count()):
-		if DisplayServer.screen_get_usable_rect(i).has_point(probe): return true
-	return false
-
-# Open once on a project that has never seen the plugin, so the panel introduces
-# itself instead of hiding behind a button nobody knows to press. After that the
-# saved layout decides.
-func _first_run_open() -> void:
-	var es := EditorInterface.get_editor_settings()
-	if bool(es.get_project_metadata("highpoly", "tools_seen", false)): return
-	es.set_project_metadata("highpoly", "tools_seen", true)
-	if tools_btn: tools_btn.button_pressed = true
-
-# Godot hands plugins a slice of the editor layout file to persist into, so the
-# panel comes back where it was left — including whether it was open.
-func _get_window_layout(cfg: ConfigFile) -> void:
-	if win == null: return
-	if win.visible: _win_rect = Rect2i(win.position, win.size)
-	cfg.set_value("HighPoly", "win_rect", _win_rect)
-	# Hidden only while BF6 Home is shown still counts as open.
-	cfg.set_value("HighPoly", "win_open", win.visible or _win_held_for_home)
-	cfg.set_value("HighPoly", "docked", _is_docked())
-
-func _set_window_layout(cfg: ConfigFile) -> void:
-	_win_rect = cfg.get_value("HighPoly", "win_rect", Rect2i())
-	# THE PANEL ALWAYS LIVES SOMEWHERE NOW: floating, or a tab in the dock
-	# column. There is no third state where it exists and cannot be seen, which
-	# is what "closed" used to mean and what made people hunt for the button.
-	if bool(cfg.get_value("HighPoly", "docked", false)):
-		_dock_panel.call_deferred()
-	elif tools_btn and bool(cfg.get_value("HighPoly", "win_open", false)):
-		tools_btn.button_pressed = true      # fires _set_tools_visible
-	else:
-		# Neither recorded: a layout written before the panel could dock, or a
-		# first run. Docked is the safe home - visible, out of the way, and one
-		# click from floating.
-		_dock_panel.call_deferred()
 
 func _human_size(bytes: int) -> String:
 	if bytes >= 1073741824:
@@ -5264,86 +5006,3 @@ func _swap_deferred(node: Node) -> void:
 	# the rest of your map content (O(1): only this node's own meshes are touched)
 	if mapctx_optimize != null and mapctx_optimize.button_pressed:
 		PlacedCull.apply(node as Node3D, _cull_radius(), true)
-
-
-# ------------------------------------------------------------------ BF6 menu
-#
-# THE SAME ENTRIES AS THE UNREAL ADD-ON'S WHEEL. HIGH POLY ("the real game
-# assets", order 900) opens this plugin's panel from the radial, as the Unreal
-# pill opens its control panel; in the menu bar it lists the panel's own
-# controls, in the order and under the section titles of menu.json - the file
-# the Unreal panel is built from too. (The fork removed the LOADOUT entry with
-# the spawner previews, F-05b.)
-
-func _register_bf6_menu() -> void:
-	var bf6_menu := PluginMenu.ensure()
-	if bf6_menu == null:
-		return
-	bf6_menu.register_plugin("highpoly", "High Poly", 900, _bf6_menu_items,
-		func(_ctx): return "the real game assets", {"pick": func(_center): _bf6_show_panel()})
-
-
-func _bf6_show_panel() -> void:
-	if dock_root == null or not is_instance_valid(dock_root):
-		return
-	if _is_docked():
-		var tabs := dock_root.get_parent() as TabContainer
-		if tabs != null:
-			tabs.current_tab = dock_root.get_index()
-	elif win != null and is_instance_valid(win):
-		win.show()
-		win.grab_focus()
-
-
-func _bf6_menu_items(_ctx: Dictionary) -> Array:
-	var items: Array = [{"id": "panel", "label": "Open the High Poly panel", "pick": _bf6_show_panel}]
-	if _preparation != null and is_instance_valid(_preparation) and _preparation.has_method("show_progress"):
-		items.append({"id": "cache", "label": "Show caching progress", "pick": func(): _preparation.show_progress()})
-	for section in SharedMenu.data().get("sections", []):
-		var sec: Dictionary = section
-		var rows: Array = []
-		for group in sec.get("groups", []):
-			for control_id in (group as Dictionary).get("controls", []):
-				var b: Dictionary = _menu_bindings.get(str(control_id), {})
-				var c: Variant = b.get("control")
-				if not (c is Control) or not is_instance_valid(c):
-					continue
-				var root: Variant = b.get("root", c)
-				if root is Control and not (root as Control).is_visible_in_tree() and not (c as Control).visible:
-					continue
-				rows.append_array(_bf6_rows_for(str(control_id), c as Control))
-		if rows.is_empty():
-			continue
-		items.append({"separator": true, "label": str(sec.get("title", ""))})
-		items.append_array(rows)
-	return items
-
-
-# A control as menu rows: a toggle is a check row that stays open, an action a
-# plain row, a choice one check row per option. Sliders stay on the panel.
-func _bf6_rows_for(id: String, c: Control) -> Array:
-	if c is OptionButton:
-		var ob := c as OptionButton
-		var rows: Array = []
-		for i in range(ob.item_count):
-			if ob.is_item_separator(i) or ob.is_item_disabled(i):
-				continue
-			var index := i
-			rows.append({"id": "%s.%d" % [id, i], "label": ob.get_item_text(i), "checked": ob.selected == i,
-				"closes": false, "pick": func():
-					if ob.selected != index:
-						ob.select(index)
-						ob.item_selected.emit(index)})
-		return rows
-	if c is Button:
-		var b := c as Button
-		var label := b.text if b.text != "" else b.tooltip_text.get_slice("\n", 0)
-		if label == "":
-			label = id.capitalize()
-		if b.disabled:
-			return []
-		if b.toggle_mode:
-			return [{"id": id, "label": label, "checked": b.button_pressed, "closes": false,
-				"pick": func(): b.button_pressed = not b.button_pressed}]
-		return [{"id": id, "label": label, "pick": func(): b.pressed.emit()}]
-	return []

@@ -13,15 +13,14 @@ water) and viewport performance tools.
 
 1. Copy this folder to `addons/highpoly_toggle/` in the SDK Godot project.
 2. Enable it under Project → Project Settings → Plugins.
-3. Press **High-Poly Tools** in the 3D viewport toolbar — beside the SDK's own
-   **Apply Texture** button. It opens a floating panel you can move anywhere,
-   including onto a second monitor. Models and map data sync automatically in
-   the background (scene props first) — no other setup.
+3. The **High-Poly** tab appears in the editor's right-hand dock column (beside
+   Inspector, Signals and Groups) as soon as the plugin is enabled. Drag it to
+   any other dock slot like any editor panel; the editor remembers where.
 
-The panel is a window rather than a dock because level building wants the
-viewport wide, and a permanent right-hand dock costs ~400px of it. Closing the
-panel only hides it: the background sync, map-context builds and downloads all
-keep running. Its position and open/closed state are remembered per project.
+Nothing is cached when Godot starts. Open a map and press **Cache this map** in
+the panel to prepare that map only; High-Poly also works on an uncached map
+(the first build reads everything from the install, and later builds reuse the
+geometry and texture packs it writes).
 
 ## Look
 

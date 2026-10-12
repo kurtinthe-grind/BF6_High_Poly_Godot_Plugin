@@ -105,6 +105,26 @@ RULES: dict[str, dict] = {
         "forbid": [r"set_meta\(\s*(HighpolyLib\.)?VARIANT_META", r"get_meta\(\s*(HighpolyLib\.)?VARIANT_META",
                    r"set_meta\(\s*OPEN_META", r"get_meta\(\s*OPEN_META"],
     },
+    # UI-01: the shared "BF6" menu-bar entry and its radial registration are gone;
+    # every action they offered lives on the High-Poly dock panel.
+    "UI-01": {
+        "absent": ["bf6_plugin_menu.gd"],
+        "forbid": [r"\bPluginMenu\b", r"bf6_plugin_menu", r"\b_register_bf6_menu\b",
+                   r"\b_bf6_menu_items\b", r"\b_bf6_rows_for\b", r"\bregister_plugin\(",
+                   r"\bHOME_PANELS_GROUP\b", r"bf6_workspace_panels_v1",
+                   r"\bset_visibility_suppressed\b", r"\b_panel_suppressed\b",
+                   r"\b_apply_home_suppression\b", r"\b_home_screen_visible_now\b"],
+    },
+    # UI-02: the panel is a permanent dock tab - no floating window, no toolbar
+    # toggle, no float/dock switching.
+    "UI-02": {
+        "absent": [],
+        "forbid": [r"\b_build_tool_window\b", r"\b_float_panel\b", r"\b_dock_panel\b",
+                   r"\b_set_tools_visible\b", r"\btools_btn\b", r"\b_close_tools\b",
+                   r"\b_win_rect\b", r"\b_win_held_for_home\b", r"\bWIN_SIZE\b",
+                   r"\bCONTAINER_SPATIAL_EDITOR_MENU\b", r"\"High-Poly Tools\"",
+                   r"\b_first_run_open\b"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -117,6 +137,8 @@ ENABLED: list[str] = [
     "F-05b",
     "HP-006",
     "F-08",
+    "UI-01",
+    "UI-02",
 ]
 
 
