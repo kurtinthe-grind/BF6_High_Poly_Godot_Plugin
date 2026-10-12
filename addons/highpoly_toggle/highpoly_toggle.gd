@@ -4577,7 +4577,7 @@ func _apply_scene() -> void:
 	_swap_gen += 1
 	var gen := _swap_gen
 	_swap_busy = true
-	HighpolyVitals.crumb("swapping placed objects")
+	HighpolyVitals.job_begin("swapping placed objects")
 	# WHO IS SWAPPING, AND IS ANYONE ELSE. Two passes over the same scene
 	# nodes, interleaved across their yields, would both be freeing and
 	# re-adding the same children - and the four layers that crash all die
@@ -4615,8 +4615,8 @@ func _apply_scene() -> void:
 		await tree.process_frame
 		if gen != _swap_gen or EditorInterface.get_edited_scene_root() != r:
 			lane.call(total, total)        # close the bar, leave the rest to the newer pass
+			HighpolyVitals.job_end("swapping placed objects")
 			if gen == _swap_gen:
-				HighpolyVitals.crumb("idle, nothing building")
 				_swap_busy = false
 			if OS.get_environment("BF6_MESH_TRACE") == "1":
 				_swap_live -= 1
@@ -4627,7 +4627,7 @@ func _apply_scene() -> void:
 		budget = clampi((Time.get_ticks_msec() - y0) * 4, 250, 2000)
 		slice_t0 = Time.get_ticks_msec()
 	lane.call(total, total)
-	HighpolyVitals.crumb("idle, nothing building")
+	HighpolyVitals.job_end("swapping placed objects")
 	_swap_busy = false
 	if OS.get_environment("BF6_MESH_TRACE") == "1":
 		_swap_live -= 1

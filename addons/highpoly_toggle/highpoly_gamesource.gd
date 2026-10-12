@@ -295,6 +295,7 @@ const FROM_INSTALL := "install"
 const FROM_CACHE := "cache"
 const FROM_MEMORY := "memory"
 const FROM_MIXED := "mixed"
+const FROM_WRITE := "cache write"   # writing a cache, never a hit (OPT-14)
 
 var phases := {}                       # name -> {ms, items, unit, from, note}
 var _phase_order: Array = []
@@ -576,7 +577,7 @@ func build_report() -> PackedStringArray:
 		["  of which re-derived one at a time", t_rederive, n_rederived, "meshes", FROM_INSTALL],
 		["  of which served from kept records", 0, n_pc_kept_hits, "meshes", FROM_MEMORY],
 		["mesh: load from geom cache", t_geom_load, n_geom_loaded, "meshes", FROM_CACHE],
-		["mesh: save to geom cache", t_geom_save, n_geom_saved, "meshes", FROM_INSTALL],
+		["mesh: save to geom cache", t_geom_save, n_geom_saved, "meshes", FROM_WRITE],
 		["materials: dress surfaces", t_mat, n_mat_built + n_mat_cached,
 			"lookups", FROM_MIXED],
 		["materials: of which textures", t_tex, int(tex_stats.get("decoded", 0)),

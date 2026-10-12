@@ -298,6 +298,10 @@ const PH_CACHE := "cache"           # served from a file this plugin wrote
 const PH_MEMORY := "memory"         # already in this process
 const PH_MIXED := "mixed"
 const PH_ENGINE := "engine"         # Godot did it: parse, upload, draw
+# Writing a cache is not reading one. These rows used to say "cache", which put
+# a cold build's cache WRITES in the same column as a warm build's cache hits,
+# and made cached and uncached runs read alike (OPT-14).
+const PH_WRITE := "cache write"
 
 var _ph_rows := {}                  # name -> {ms, n, items, from}
 var _ph_order: Array = []
@@ -2757,7 +2761,7 @@ func flush_sidecars() -> void:
 			await get_tree().process_frame
 			slice = Time.get_ticks_msec()
 	var ms := Time.get_ticks_msec() - t0
-	_ph("sidecars: write fast-load cache", ms, n, PH_CACHE)
+	_ph("sidecars: write fast-load cache", ms, n, PH_WRITE)
 	HighpolyProfiler.crumb("sidecars", "wrote %d in %.1f s" % [n, ms / 1000.0])
 	Log.debug("fast-load cache: %d sidecar(s) written in %.1f s" % [n, ms / 1000.0])
 
@@ -3888,8 +3892,8 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 				% [freed.get("textures", 0), freed.get("materials", 0),
 				   freed.get("meshes", 0),
 				   prev_map if switched_map else "the map context",
-				   "Building the new map from the on-disk cache." if switched_map
-				   else "Turning a layer back on rebuilds from the on-disk cache."])
+				   "The new map builds from its geometry and texture packs where they exist, otherwise from the install." if switched_map
+				   else "Turning a layer back on reads its geometry and texture packs where they exist, otherwise the install."])
 	var have_data := false
 	if need_data:
 		# ASKED BEFORE THE CALL, not after: the call is what fills the cache, so
@@ -3941,8 +3945,11 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 		# is not instant even on a map that is otherwise fully built.
 		var _t_tm := Time.get_ticks_msec()
 		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
+		# From the map's cache folder only when the surface was a cache hit this
+		# open; otherwise those files were composited moments ago.
+		var _surf_hit: bool = game_source != null and bool(game_source.get("_surface_cached"))
 		_ph("terrain: ground material (splat + colour map)",
-			Time.get_ticks_msec() - _t_tm, maxi(1, _splat_n), PH_CACHE)
+			Time.get_ticks_msec() - _t_tm, maxi(1, _splat_n), PH_CACHE if _surf_hit else PH_MIXED)
 
 	# STAND DOWN, AND STAND THEIRS DOWN TOO.
 	#
@@ -4023,9 +4030,10 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 			# per chunk rather than only by whether the total moved.
 			var _t_ter := Time.get_ticks_msec()
 			var tmi := _build_terrain_from_heightmap(dir, hm)   # chunked full-accuracy mesh from raw 16-bit heights
-			_ph("terrain: build the heightfield mesh",
+			_ph("terrain: build the heightfield mesh" + (" (cached .res)" if _terrain_from_cache else ""),
 				Time.get_ticks_msec() - _t_ter,
-				0 if tmi == null else tmi.get_child_count(), PH_CACHE)
+				0 if tmi == null else tmi.get_child_count(),
+				PH_CACHE if _terrain_from_cache else PH_ENGINE)
 			if tmi:
 				# exact data height, no sink (was -0.5 to dodge z-fighting under
 				# the SDK bowl: read as "terrain a meter low" â€” the heightmap is
@@ -4057,7 +4065,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 					var scam := _editor_cam()
 					if scam: _scatter.tick(scam.global_transform.origin)
 				_ph("scatter: set up the vegetation kits",
-					Time.get_ticks_msec() - _t_sc, maxi(1, _scatter_n), PH_CACHE)
+					Time.get_ticks_msec() - _t_sc, maxi(1, _scatter_n), PH_ENGINE)
 	# Roads and street markings, baked from the level's TerrainDecals and draped
 	# on the heightfield by roads_build.py. They belong with the ground, so they
 	# follow Extended Terrain rather than getting a switch of their own: without
@@ -4483,7 +4491,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()          # cache written after the skyline is up
 	_ph("skyline: flush the fast-load sidecars",
-		Time.get_ticks_msec() - _t_side, _side_n, PH_CACHE)
+		Time.get_ticks_msec() - _t_side, _side_n, PH_WRITE)
 	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
 	_release_texture_images()       # no-op if the props lane is still running
 	backdrop_progress.emit(_bd_total, _bd_total)
@@ -4806,7 +4814,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()
 	_ph("props: flush the fast-load sidecars",
-		Time.get_ticks_msec() - _t_side, _side_n, PH_CACHE)
+		Time.get_ticks_msec() - _t_side, _side_n, PH_WRITE)
 	_report_progress(true)
 	# The CPU-side texture pool has done its job — it exists to stop the same
 	# pixels being decoded once per prop, and nothing decodes after this. The GPU
@@ -4868,7 +4876,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			int(game_source.n_geom_loaded), PH_CACHE)
 		_ph("props: game source, save geometry to the cache",
 			int(game_source.t_geom_save / 1000),
-			int(game_source.n_geom_saved), PH_CACHE)
+			int(game_source.n_geom_saved), PH_WRITE)
 		HighpolyProfiler.mark("phase",
 			"game source geometry cache: %d loaded (%.1f s), %d saved (%.1f s)"
 			% [int(game_source.n_geom_loaded), game_source.t_geom_load / 1e6,
@@ -5178,8 +5186,10 @@ var _us_tile_build := 0
 var _us_tile_lods := 0
 var _us_tile_skirt := 0
 var _us_tile_save := 0
+var _terrain_from_cache := false   # the last terrain mesh came from its .res
 
 func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
+	_terrain_from_cache = false
 	var step: int = maxi(1, _step_for(meta))
 	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
 	# anyone with a v1 cache would keep their inside-out terrain forever â€” the
@@ -5208,7 +5218,9 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
 			var inst := (cached as PackedScene).instantiate()
-			if inst is Node3D: return inst as Node3D
+			if inst is Node3D:
+				_terrain_from_cache = true
+				return inst as Node3D
 	var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
 	if raw.is_empty(): return null
 	var res: int = int(meta.get("res", 4097))
@@ -6686,7 +6698,7 @@ func _bake_hlod(props_root: Node3D) -> void:
 	decal_progress.emit("", 0, 0)
 	HighpolyVitals.crumb("idle, nothing building")
 	_ph("props: merge cells to cut draw calls",
-		Time.get_ticks_msec() - t0, maxi(1, done), PH_CACHE)
+		Time.get_ticks_msec() - t0, maxi(1, done), PH_ENGINE)
 	if done == 0:
 		Log.info("Draw calls: no prop cell was worth merging on this map.")
 		return
