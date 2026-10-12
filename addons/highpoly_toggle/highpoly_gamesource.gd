@@ -1019,7 +1019,7 @@ func ensure_ground(cache_dir: String, progress := Callable()) -> bool:
 #
 # Those two Dictionaries are mounted once and then read all over this file by
 # scanning every key - terrain() looks for the streaming tree that way,
-# _water_partition and water_sim do the same, _level_dir and the gamemode
+# _level_dir and the gamemode
 # miner's roots_of too. That is fine against a mount that has stopped changing,
 # and it is a crash against one that has not: the sweep runs on a worker, and a
 # Dictionary that rehashes under another thread's iterator takes the process
@@ -1700,36 +1700,10 @@ var _level_light_records: Array = []
 func drop_map_data() -> void:
 	_map_data.clear()
 	_map_data_key = "￿"
-	_water_part = "￿"
 	_level_light_records.clear()
 	_lighting_zones_cache.clear()
 	_lighting_zones_stats.clear()
 	_lighting_zones_done = false
-
-
-# Re-ask ONE question and patch the answer in place, leaving the rest of the
-# summary alone.
-#
-# The whole-summary drop above is correct and unusable on a live map: apply()
-# clears the scene before it reloads the data, so anything that goes wrong in the
-# rebuild leaves the level torn down, and the rebuild itself is terrain work on
-# the main thread inside a toggle handler. This costs one partition parse.
-#
-# Erasing on empty matters as much as setting on found. map_data only writes the
-# key when there IS water, so leaving a stale entry behind would be a level
-# showing water it does not have.
-func refresh_water() -> void:
-	_water_part = "￿"
-	_water_look_cache.clear()
-	_water_sim_done = false
-	_water_sim.clear()
-	if _map_data.is_empty():
-		return
-	var w := water(surface_cache)
-	if w.is_empty():
-		_map_data.erase("water")
-	else:
-		_map_data["water"] = w
 
 
 # Has map_data already been built for this cache directory? Asked by the builder
@@ -1746,8 +1720,8 @@ func map_data_ready(cache_dir := "") -> bool:
 # panel on the call. It must give the same answer map_data itself would reach:
 # a missing base build is work, and so is any wanted optional section that has
 # not been built yet - that is the lazy fill, and it is just as capable of
-# freezing the main thread as the first build (mining water alone was measured
-# in the tens of seconds).
+# freezing the main thread as the first build (mining lights or FX alone can
+# take tens of seconds).
 func map_data_would_build(cache_dir := "", want := {}) -> bool:
 	if _map_data_key != cache_dir or _map_data.is_empty():
 		return true
@@ -1755,15 +1729,6 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 	for k in MD_OPTIONAL:
 		if bool(need.get(k, true)) and not _md_built.has(k):
 			return true
-	# WATER RE-ASKS WHEN THE ANSWER WAS "NONE". The key is only written when
-	# water is FOUND, so "built, but no key" is indistinguishable from "asked
-	# before the reader could find it" - and that exact shape is how a water
-	# fix reached a user's editor and did nothing until a restart (twice now:
-	# the aftermath partition miss, then the block-2 river). The cost of the
-	# re-ask on a genuinely waterless map is one partition parse and one
-	# find_block, on the worker, only when the user toggles Water on.
-	if bool(need.get("water", false)) and not _map_data.has("water"):
-		return true
 	return false
 
 
@@ -1776,7 +1741,7 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # is 64 s of a 74 s terrain-only apply, on the main thread, and it is the "why
 # is it extracting things I did not ask for" that people keep reporting.
 #
-# `want` names the OPTIONAL sections: lights, fx, water. Absent or empty means
+# `want` names the OPTIONAL sections: lights, fx, edv. Absent or empty means
 # build everything, so every existing caller behaves exactly as before. The
 # ground, the roads and the group placements are always built: a terrain apply
 # genuinely needs them, and they are what the props and skyline lanes key off.
@@ -1785,7 +1750,7 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # lights wanted, and only the missing section is built - so nothing is lost by
 # not building it up front, which is what makes this safe to skip rather than
 # merely cheaper.
-const MD_OPTIONAL := ["lights", "fx", "water", "edv"]
+const MD_OPTIONAL := ["lights", "fx", "edv"]
 
 func map_data(cache_dir := "", want := {}) -> Dictionary:
 	var need := _md_need(want)
@@ -1806,7 +1771,7 @@ func map_data(cache_dir := "", want := {}) -> Dictionary:
 
 func _md_need(want: Dictionary) -> Dictionary:
 	if want.is_empty():
-		return {"lights": true, "fx": true, "water": true, "edv": true}
+		return {"lights": true, "fx": true, "edv": true}
 	var d := {}
 	for k in MD_OPTIONAL:
 		d[k] = bool(want.get(k, false))
@@ -1831,19 +1796,8 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 		_md_built["fx"] = true
 		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
 			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
-	if bool(need.get("water", false)) \
-			and (not _md_built.has("water") or not out.has("water")):
-		# The second clause is the re-ask: see map_data_would_build. An empty
-		# earlier answer must not outlive the code that produced it.
-		var t_w := Time.get_ticks_msec()
-		var w := water(cache_dir)
-		if not w.is_empty():
-			out["water"] = w
-		_md_built["water"] = true
-		note_phase("water", Time.get_ticks_msec() - t_w, w.size(), "bodies",
-			FROM_INSTALL, "the level's water partition")
 	if bool(need.get("edv", false)) and not _md_built.has("edv"):
-		# In memory like water, not a file like lights: the builder runs while
+		# In memory, not a file like lights: the builder runs while
 		# this source is alive either way, and the sheets resolve through
 		# decal_sheet() at build time. The key is written even when the answer
 		# is empty - the records come off the already-run walk, so a re-ask
@@ -4110,807 +4064,6 @@ func _height_at(x: float, z: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# THE WATER SURFACE, from the level's default world part.
-#
-# A WaterSurfaceEntityData instance whose SpatialEntityData.Transform is a unit
-# quad scaled to the surface: right row at +0x20 carries scaleX, forward at
-# +0x40 scaleZ, translation at +0x50 is (tx, ty, tz) with ty the water height.
-# TERRAIN.md §11, verified across all 11 water surfaces in the game.
-#
-# READ FROM RAW OFFSETS, deliberately. The type has no fields in
-# SharedTypeDescriptors, so the deserializer returns nothing for it — this is
-# one of the few places where reaching into the instance bytes is correct
-# rather than lazy.
-#
-# TWO TRAPS, both of which produce plausible water in the wrong place:
-#   * TileOffset at +0x90 is (2048, 0.5, 2048) and looks like extents+height.
-#     Taking its Y puts the sea at y = 0.5 instead of Dumbo's 49.8.
-#   * both documented readings give a HALF extent, and PlaneMesh.size is a FULL
-#     width — so the scale value goes in as-is. Halving it draws the water at
-#     half its width and a quarter of its area, which is invisible from the
-#     middle of a map.
-const WATER_TYPE := "ae0b69fc-2207-d874-8230-fcd467a592cf"
-
-
-# WHICH PARTITION DECLARES THE WATER, found rather than assumed.
-#
-# This used to read one file: <level>/default. That is where mp_dumbo keeps its
-# water surface, and it is not where every level keeps it. mp_aftermath declares
-# it in <level>/_layers_content/water, so the read returned nothing, and nothing
-# is indistinguishable from "this level has no water" - the level came up dry
-# with no error anywhere.
-#
-# Measured: scanning all 3,521 of aftermath's partitions finds the water type in
-# exactly one, and the same scan over dumbo's 1,891 finds it in exactly one. So
-# the entity is always somewhere; only its partition varies.
-#
-# Named candidates first because they cost three parses and cover what we have
-# seen, then a full scan because a candidate list is a guess and a scan is an
-# answer. Partitions whose name mentions water are tried first within the scan,
-# which is a hint about ORDER only: the scan still reaches everything.
-var _water_part := "￿"          # "" is a legitimate answer (no water)
-
-func _water_partition() -> String:
-	if _water_part != "￿":
-		return _water_part
-	_water_part = ""
-	var lvl := _level_dir()
-	for cand in ["%s/default" % lvl, "%s/_layers_content/water" % lvl,
-			"%s/default" % level]:
-		if src.ebx.has(cand) and _counts_water(str(cand)):
-			_water_part = str(cand)
-			return _water_part
-	var rest: Array = []
-	# Snapshot: walking the live member races the catalogue republish.
-	var t_ebx: Dictionary = src.snap_ebx()
-	for k in t_ebx.keys():
-		var n := str(k)
-		if lvl != "" and not n.begins_with(lvl):
-			continue
-		if n.to_lower().contains("water"):
-			if _counts_water(n):
-				_water_part = n
-				return n
-		else:
-			rest.append(n)
-	for n in rest:
-		if _counts_water(str(n)):
-			_water_part = str(n)
-			return _water_part
-	return ""
-
-
-func _counts_water(name: String) -> bool:
-	var raw: PackedByteArray = src.get_ebx(name)
-	if raw.is_empty():
-		return false
-	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
-	if not e.parse(raw):
-		return false
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i) == WATER_TYPE:
-			return true
-	return false
-
-
-# ---------------------------------------------------------------------------
-# THE RIVER, out of terrain streaming-tree BLOCK 2.
-#
-# Block 2 is a second, ABSOLUTE-Y u16 heightfield: the water surface, decoded
-# with block 0's own codec (u16/65536 x WorldSizeY). It was mislabeled
-# "density" from an engine binder slot name, which is why no water search ever
-# looked at it - while the user could SEE the river in game. Measured
-# (MAP-TUNGSTEN.md §U): every decoded sample lands inside its node's stored
-# AABB-Y band, the water-above-ground raster reproduces the braided channels
-# one-for-one, the level descends monotonically downstream (76.4 -> 66.9 m),
-# and on Eastwood the wet plateaus match the LakeData authored levels to the
-# centimetre. Dry texels hold a constant fill just below the terrain floor, so
-# the wet mask is simply "above the fill".
-#
-# Ships on tungsten, eastwood and isolated; every other map has no block 2 and
-# returns {} here, which costs one find_block call.
-#
-# -> {"mesh": ArrayMesh, "y0", "y1", "wet_km2"} or {}
-# ---------------------------------------------------------------------------
-const WATER_GRID := 1024               # ~4 m per sample on a 4 km map: the
-                                       # water surface is smooth, unlike ground
-
-func terrain_water(cache_dir := "") -> Dictionary:
-	if src == null:
-		return {}
-	var pick := ""
-	# Snapshot: walking the live member races the catalogue republish.
-	var t_res: Dictionary = src.snap_res()
-	for rn in t_res.keys():
-		var n := str(rn)
-		if n.contains("streamingtree") and n.to_lower().contains(level):
-			pick = n
-			break
-	if pick == "":
-		return {}
-	var res := src.get_res(pick)
-	if res.is_empty():
-		return {}
-	var t := BF6Terrain.new()
-	var b2 := t.find_block(res, BF6Terrain.BLOCK_DENSITY)
-	if b2.is_empty():
-		return {}                      # no block 2: this map's water is elsewhere
-	if not t.read_block_header(b2) or not t.walk_nodes(b2):
-		return {}
-	var dir := t.read_chunk_directory(res)
-	if dir.is_empty():
-		return {}
-	# The block-2 payload is NOT at the chunk head: the primary chunk is
-	# [block-0][pages][block-2][tiles]. The wrapped fetch hands resolve_external
-	# the block-2 window as if it were the whole chunk, picked from the tail
-	# candidates by which slice's interior u16s scale into the node's own
-	# stored AABB-Y band - pages and tiles do not.
-	var band := {}
-	for n in t.nodes:
-		var nd: Dictionary = n
-		if not nd["external"]:
-			continue
-		var e = dir.get(int(nd["key"]))
-		if e == null:
-			continue
-		var g := str((e as Dictionary)["primary"])
-		var yb := Vector2((nd["min"] as Vector3).y, (nd["max"] as Vector3).y)
-		band[g] = yb
-		band[BF6Terrain._reverse_guid(g)] = yb
-	var xs := t.xs
-	var dsz := t.data_size
-	var wy := t.world_size_y
-	var want := xs * xs * 2
-	var fetch2 := func(g) -> PackedByteArray:
-		var gs := str(g)
-		if not band.has(gs):
-			return PackedByteArray()   # a paired chunk: block 2 has none
-		var raw: PackedByteArray = src.get_chunk(gs)
-		if raw.size() < 2 * dsz:
-			return PackedByteArray()   # single-payload chunk: block 0 only
-		var yb: Vector2 = band[gs]
-		var lo16 := int(maxf(0.0, (yb.x - 0.5) / wy * 65536.0))
-		var hi16 := int(minf(65535.0, (yb.y + 0.5) / wy * 65536.0))
-		var best_off := -1
-		var best := -1.0
-		# Every colour-trailer size any map family ships (BC7 68/132/260, BC1
-		# 132, the granite mixed pair, the mip pair) - mp_isolated's tails are
-		# {8712, 26136} and the original short list dropped ALL of its nodes
-		# (RESEARCH-WATER2.md). The in-band score still decides.
-		for tail in [0, 4624, 8712, 17424, 26136, 34848, 67600, 85024]:
-			var off: int = raw.size() - int(tail) - dsz
-			if off < dsz:
-				continue
-			var okn := 0
-			var cnt := 0
-			var j := 4
-			while j < xs - 4:
-				var i := 4
-				while i < xs - 4:
-					var v := raw.decode_u16(off + (j * xs + i) * 2)
-					if v >= lo16 and v <= hi16:
-						okn += 1
-					cnt += 1
-					i += 13
-				j += 13
-			var f := float(okn) / maxf(1.0, float(cnt))
-			if f > best:
-				best = f
-				best_off = off
-		if best_off < 0 or best < 0.9:
-			return PackedByteArray()
-		return raw.slice(best_off, best_off + want)
-	# EXTERNAL NODES ONLY, exactly as the discovery probes measured. Inline
-	# block-2 payloads bypass the per-node AABB-Y vetting the wrapped fetch
-	# applies, and letting them into the composite painted junk water at
-	# 522 m over the mountains. The externals are the river; a node the game
-	# did not spill to a chunk carries no water worth trusting.
-	for n0 in t.nodes:
-		var nd0: Dictionary = n0
-		if not bool(nd0["external"]):
-			nd0["values"] = PackedByteArray()
-	t.resolve_external(dir, fetch2)
-	var g := t.composite(WATER_GRID)
-	if g.is_empty():
-		return {}
-	# WET = WATER ABOVE GROUND, per texel, never a modal fill. The first cut
-	# clipped against the map's most common block-2 value plus half a metre,
-	# which RESEARCH-WATER2.md measured failing in both directions: eastwood
-	# over-selects 113x (3.4 vs 0.03 km2) because its dry fill sits far below
-	# its many small ponds, and mp_isolated's water VANISHES entirely because
-	# its dry fill IS the water level (a flat 100.5 m fjord). The ground is
-	# right there in height_game.r16 - the block-0 heightfield #72 caches -
-	# and block2 > block0 + 2 cm is the same test the probes validated the
-	# discovery with.
-	var grid: PackedByteArray = g["data"]
-	var gnd := PackedByteArray()
-	var gres := 0
-	var gmin := 0.0
-	var gspan := 1.0
-	var gscale := 1.0
-	if cache_dir != "":
-		var mv: Variant = JSON.parse_string(FileAccess.get_file_as_string(
-			"%s/height_game.json" % cache_dir))
-		if mv is Dictionary:
-			var md: Dictionary = mv
-			gnd = FileAccess.get_file_as_bytes("%s/height_game.r16" % cache_dir)
-			gres = int(md.get("res", 0))
-			gmin = float(md.get("world_min", 0.0))
-			gspan = float(md.get("world_max", 0.0)) - gmin
-			gscale = float(md.get("scale", 1.0))
-			if gres <= 1 or gnd.size() != gres * gres * 2:
-				gnd = PackedByteArray()
-	if gnd.is_empty():
-		# No ground grid to clip against (the heightfield has not been built
-		# for this map yet). Refusing is honest; the water layer asks again
-		# after the terrain exists, and a wrong clip is worse than a late one.
-		_say("game source: block-2 water present but the terrain heightfield "
-			+ "is not built yet - switch Extended Terrain on first")
-		return {}
-	var ground_at := func(wx: float, wz: float) -> float:
-		var fx := clampf((wx - gmin) / gspan, 0.0, 1.0) * float(gres - 1)
-		var fz := clampf((wz - gmin) / gspan, 0.0, 1.0) * float(gres - 1)
-		var x0i := int(fx)
-		var z0i := int(fz)
-		var x1i := mini(x0i + 1, gres - 1)
-		var z1i := mini(z0i + 1, gres - 1)
-		var tx := fx - float(x0i)
-		var tz := fz - float(z0i)
-		var h00 := float(gnd.decode_u16((z0i * gres + x0i) * 2))
-		var h10 := float(gnd.decode_u16((z0i * gres + x1i) * 2))
-		var h01 := float(gnd.decode_u16((z1i * gres + x0i) * 2))
-		var h11 := float(gnd.decode_u16((z1i * gres + x1i) * 2))
-		return lerpf(lerpf(h00, h10, tx), lerpf(h01, h11, tx), tz) \
-			* gscale / 65535.0
-	var lo: Vector3 = g["min"]
-	var hi: Vector3 = g["max"]
-	# The block-2 ROOT's own AABB-Y is the authored envelope of every water
-	# level on the map (tungsten 64.0..76.5, isolated 100.5..109.1, eastwood's
-	# lakes inside 215..238). Values outside it are stray texels in coarse
-	# nodes - one on tungsten claimed a 50 m-deep lake on a mountainside at
-	# 522 m, inside its node's band but outside the root's.
-	var env_lo := lo.y - 0.5
-	var env_hi := hi.y + 0.5
-	var step_x := (hi.x - lo.x) / float(WATER_GRID - 1)
-	var step_z := (hi.z - lo.z) / float(WATER_GRID - 1)
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var quads := 0
-	var y0 := 1.0e9
-	var y1 := -1.0e9
-	for gz in range(WATER_GRID - 1):
-		for gx in range(WATER_GRID - 1):
-			var v00 := grid.decode_u16((gz * WATER_GRID + gx) * 2)
-			var v10 := grid.decode_u16((gz * WATER_GRID + gx + 1) * 2)
-			var v01 := grid.decode_u16(((gz + 1) * WATER_GRID + gx) * 2)
-			var v11 := grid.decode_u16(((gz + 1) * WATER_GRID + gx + 1) * 2)
-			var x0 := lo.x + gx * step_x
-			var z0 := lo.z + gz * step_z
-			# Per corner: wet keeps its water level (and counts toward the
-			# stats); a DRY corner of a wet quad is the bank, and it sits at
-			# its own ground plus the epsilon - never at the raw grid value,
-			# which at composite holes is zero and at coarse texels can be
-			# anything. That is what put 0 m and 522 m into the first mesh's
-			# vertex range while the wet area was already correct.
-			var cy := PackedFloat32Array()
-			var wets := 0
-			for c in [[v00, x0, z0], [v10, x0 + step_x, z0],
-					[v01, x0, z0 + step_z], [v11, x0 + step_x, z0 + step_z]]:
-				var wyv := float((c as Array)[0]) / 65536.0 * wy
-				var gv: float = ground_at.call(float((c as Array)[1]),
-					float((c as Array)[2]))
-				if wyv > gv + 0.02 and wyv >= env_lo and wyv <= env_hi:
-					wets += 1
-					cy.push_back(wyv)
-					y0 = minf(y0, wyv)
-					y1 = maxf(y1, wyv)
-				else:
-					cy.push_back(gv + 0.02)
-			if wets == 0:
-				continue
-			var p00 := Vector3(x0, cy[0], z0)
-			var p10 := Vector3(x0 + step_x, cy[1], z0)
-			var p01 := Vector3(x0, cy[2], z0 + step_z)
-			var p11 := Vector3(x0 + step_x, cy[3], z0 + step_z)
-			st.set_normal(Vector3.UP)
-			st.set_uv(Vector2(x0, z0) * 0.05)
-			st.add_vertex(p00)
-			st.set_uv(Vector2(x0, z0 + step_z) * 0.05)
-			st.add_vertex(p01)
-			st.set_uv(Vector2(x0 + step_x, z0) * 0.05)
-			st.add_vertex(p10)
-			st.set_uv(Vector2(x0 + step_x, z0) * 0.05)
-			st.add_vertex(p10)
-			st.set_uv(Vector2(x0, z0 + step_z) * 0.05)
-			st.add_vertex(p01)
-			st.set_uv(Vector2(x0 + step_x, z0 + step_z) * 0.05)
-			st.add_vertex(p11)
-			quads += 1
-	if quads == 0:
-		return {}
-	var mesh := st.commit()
-	var km2 := quads * step_x * step_z / 1.0e6
-	_say(("game source: river/lake surface from terrain block 2 - %d wet cells "
-		+ "(%.2f km2), water level %.1f..%.1f m") % [quads, km2, y0, y1])
-	return {"mesh": mesh, "y0": y0, "y1": y1, "wet_km2": km2}
-
-
-func water(cache_dir := "") -> Array:
-	var env = native_environment()
-	if env != null:
-		var data: Dictionary = env.read_water()
-		if not data.is_empty():
-			var surfaces: Array = []
-			for row in data.get("surfaces", []):
-				# Visible is authored entity state, not the water renderer's gate.
-				# Aftermath's river authors false and still renders. Consume every
-				# surface returned by the shared reader, as Unreal ReadWater does.
-				var surface: Dictionary = row.duplicate()
-				surface["native"] = true
-				surfaces.append(surface)
-			_say("game source: native water returned %d surface(s) for %s" % [surfaces.size(), level])
-			return surfaces
-	if src == null or types == null:
-		return []
-	var out: Array = []
-	# THE TERRAIN'S OWN WATER FIRST - the block-2 river/lake surface, which is
-	# per-texel truth. The flat entity plane on these maps is authored
-	# UNDERGROUND (tungsten y=0 vs floor 64.8) and acts as the render/material
-	# entity; block 2 is what you actually see in game. cache_dir is where the
-	# block-0 heightfield lives, which the wet clip compares against.
-	var hf := terrain_water(cache_dir if cache_dir != "" else surface_cache)
-	if not hf.is_empty():
-		hf["kind"] = "river"
-	var name := _water_partition()
-	if name == "":
-		if hf.is_empty():
-			return []
-		# a block-2 map whose entity partition eluded the name scan still
-		# renders its river; the look falls back to the default water shader
-		out.append(hf)
-		return out
-	var raw := src.get_ebx(name)
-	if raw.is_empty():
-		if not hf.is_empty():
-			out.append(hf)
-		return out
-	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
-	if not e.parse(raw):
-		return []
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i) != WATER_TYPE:
-			continue
-		var base: int = e.payload + int(e.instance_offsets[i])
-		if base + 0x60 > e.data.size():
-			continue
-		var sx := e.data.decode_float(base + 0x20)
-		var sz := e.data.decode_float(base + 0x48)
-		var tx := e.data.decode_float(base + 0x50)
-		var ty := e.data.decode_float(base + 0x54)
-		var tz := e.data.decode_float(base + 0x58)
-		if absf(sx) < 1.0 or absf(sz) < 1.0:
-			continue
-		var row := {"height": ty, "center": [tx, tz],
-			"size": [absf(sx), absf(sz)]}
-		# THE LOOK, from the same depot chain every other surface uses.
-		# Read from the deserialized instance rather than a raw offset: unlike
-		# the transform, the state key sits past the fields whose offsets shift
-		# between the two water shader variants.
-		var inst = e.read_instance(i)
-		if inst is Dictionary:
-			var look := _water_look(int((inst as Dictionary).get(WATER_STATE_KEY, 0)))
-			if not look.is_empty():
-				row["look"] = look
-		# THE MOTION, from the level's ocean simulation entity. Per LEVEL, not
-		# per surface — a level declares one wind, and copying it onto each
-		# surface is what lets the whole thing survive placements.json without a
-		# second top-level key that a cached load could miss.
-		var sim := water_sim()
-		if not sim.is_empty():
-			row["sim"] = sim
-		out.append(row)
-	if not out.is_empty():
-		var l0: Dictionary = (out[0] as Dictionary).get("look", {})
-		_say("game source: water — %d surface(s), first at y %.1f, %.0f x %.0f m%s"
-			% [out.size(), float(out[0]["height"]),
-			   float((out[0]["size"] as Array)[0]),
-			   float((out[0]["size"] as Array)[1]),
-			   "" if l0.is_empty() else ", %s shader, %d texture(s)"
-					% [str(l0.get("variant", "?")), (l0.get("tex", {}) as Dictionary).size()]])
-	if not hf.is_empty():
-		# The river wears the map's own water look: the buried plane IS the
-		# material entity (full-ocean shader on tungsten/eastwood), block 2 the
-		# shape. Marry them.
-		if not out.is_empty():
-			var first: Dictionary = out[0]
-			if first.has("look"):
-				hf["look"] = first["look"]
-			if first.has("sim"):
-				hf["sim"] = first["sim"]
-		out.append(hf)
-	if out.is_empty():
-		# SAY WHICH KIND OF NOTHING. The fleet measured ten maps with no water
-		# entity at all, and two more (battery, contaminated) whose sea is
-		# ordinary backdrop GEOMETRY placed from the level root - present in
-		# the walk, drawn by the Backdrops layer, invisible to this reader by
-		# design. "Water shows nothing" is correct on all of them, but the two
-		# reasons deserve two sentences, because one of them has a chip the
-		# user can press.
-		var sea := 0
-		if walk != null:
-			for row in walk.rows:
-				var mn := str((row as Dictionary).get("mesh", "")).get_file()
-				if mn.contains("oceanplane") or mn.contains("water"):
-					sea += 1
-		if sea > 0:
-			_say(("game source: no water entity - this map's sea/water is %d "
-				+ "scenery mesh(es); the Backdrops layer draws them") % sea)
-		else:
-			_say("game source: this map ships no water at all - an empty Water "
-				+ "layer is the correct answer, not a failure")
-	return out
-
-
-# ---------------------------------------------------------------------------
-# WHAT THE WATER IS ACTUALLY MADE OF.
-#
-# WaterSurfaceEntityData carries a u64 in field 0x2E15621F, and that u64 IS a
-# ShaderBlockDepot StateKey — so water resolves through exactly the same chain
-# as any mesh section (SHADERS.md 3, 5), no special case in the depot at all.
-#
-# Measured rather than assumed: every 8-byte-aligned u64 in the 0x260-byte
-# instance was tested against ALL 16,936 depots the mp_dumbo mount carries.
-# Of 47 candidates, exactly ONE key matched in exactly ONE depot
-# (42f38eeaac4aa54e in game/glaciermp/levels/mp_dumbo/mp_dumbo) — a single hit
-# out of ~800k lookups, which is not something a coincidence produces.
-#
-# TWO SHADER VARIANTS, and they disagree on almost everything. This is the
-# reason a reader must not generalise from one map:
-#
-#   foam-only  mp_dumbo, mp_aftermath      1 texture,  7 constants
-#              t_waterfoam_rgb + two linear float3 water colours
-#   full ocean mp_tungsten, mp_eastwood,   3-4 textures, 25-27 constants
-#              granite/limestone/outskirts/isolated
-#              t_oceanmicrodetail_nsh (the ripple normal), t_oceanfoam_nsh,
-#              t_oceannoise, perlin2d, and ONE linear float3 water colour
-#
-# mp_dumbo's own depots bind the ocean slots ZERO times (checked across every
-# depot under the level), so the reduced variant is a real authoring choice for
-# the harbour maps and not a resolution miss.
-#
-# The parameter NAMES are not recoverable — cooked depot parameters are
-# machine-generated expression-shader names and no hash construction reproduces
-# them (SHADERS.md 3.5). The slot ids below are therefore stable opaque hashes,
-# identified by what they bind and by which maps change them.
-const WATER_STATE_KEY := 0x2E15621F
-
-const WSLOT_FOAM_RGB := 0x3faa6a0b       # t_waterfoam_rgb   R patches, G bubbles, B crest streaks
-const WSLOT_WATER_A := 0x50b54e74        # linear float3, the brighter of the pair
-const WSLOT_WATER_B := 0xdfcb439c        # linear float3, the darker of the pair
-const WSLOT_FOAM_NSH := 0x60181bbf       # t_oceanfoam_nsh
-const WSLOT_DETAIL_NSH := 0x635b5631     # t_oceanmicrodetail_nsh — the ripple normal
-const WSLOT_NOISE := 0x18caba16          # t_oceannoise
-const WSLOT_PERLIN := 0xf9b82d1e         # perlin2d (128x128 R8, gradient noise)
-const WSLOT_OCEAN_COLOR := 0xeaca953a    # linear float3, the ocean variant's water colour
-
-const WSLOT_ROLE := {
-	WSLOT_FOAM_RGB: "foam_rgb", WSLOT_FOAM_NSH: "foam_nsh",
-	WSLOT_DETAIL_NSH: "detail_nsh", WSLOT_NOISE: "noise", WSLOT_PERLIN: "perlin",
-}
-
-var _water_look_cache := {}
-
-
-# The depot record for one water state key, as {variant, tex, color, scalar}.
-#
-# SCOPED TO THIS LEVEL'S OWN BUNDLES. A StateKey is only unique within a scope,
-# so a global search can bind a colliding key from a parallel level — a
-# confidently wrong material, which is worse than none because nothing about it
-# looks broken (SHADERS.md 4). The water entity's own partition is a sibling of
-# the depot that holds it (aftermath declares water in _layers_content/water and
-# the record lives in _layers_content/content), so walking UP from the partition
-# does not reach it; the level directory is the narrowest prefix that does.
-func _water_look(state_key: int) -> Dictionary:
-	if state_key == 0 or src == null or walk == null:
-		return {}
-	if _water_look_cache.has(state_key):
-		return _water_look_cache[state_key]
-	var out := {}
-	var lvl := _level_dir()
-	for scope in _depot_bundles.keys():
-		var sn := str(scope)
-		if lvl != "" and not sn.begins_with(lvl):
-			continue
-		var pair = _depot_for(sn)
-		if pair == null:
-			continue
-		var dep: BF6Depot = pair[0]
-		if not dep.key_to_record.has(state_key):
-			continue
-		out = _water_params(dep, pair[1] as PackedByteArray, state_key)
-		out["depot"] = sn
-		break
-	_water_look_cache[state_key] = out
-	return out
-
-
-func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
-	var tex := {}          # role -> texture EBX file guid
-	var asset := {}        # role -> texture asset name (for logs and reports)
-	var color := {}        # "%08x" slot -> [r, g, b] LINEAR
-	var scalar := {}       # "%08x" slot -> float
-	var other := {}        # "%08x" slot -> [typeHash, raw hex] for non-Float32 inlines
-	for p in dep.params(int(dep.key_to_record[key]), d):
-		var pd: Dictionary = p
-		var n32: int = int(pd["name32"])
-		var th: int = int(pd["type_hash"])
-		if th == BF6Depot.TH_TEXTURE:
-			var refs: Array = pd["refs"]
-			if refs.is_empty():
-				continue
-			var g := str((refs[0] as Array)[1])
-			var role := str(WSLOT_ROLE.get(n32, "nh_%08x" % n32))
-			tex[role] = g
-			var an = walk.gi.get(g)
-			if an != null:
-				asset[role] = str(an)
-		elif th == 0x25f81af1:
-			var r3: PackedByteArray = pd["raw"]
-			color["%08x" % n32] = [r3.decode_float(0), r3.decode_float(4),
-				r3.decode_float(8)]
-		elif th == 0x14a0b1c1:
-			scalar["%08x" % n32] = (pd["raw"] as PackedByteArray).decode_float(0)
-		else:
-			# NOT EVERY 4-BYTE CONSTANT IS A Float32. The ocean variant ships at
-			# least one under a different type hash, and a reader that only
-			# collects 0x14a0b1c1 silently reports one constant fewer than the
-			# record holds - which is exactly how a count gets quoted wrong.
-			# Kept as raw bytes rather than coerced, since the type is the thing
-			# that is not known.
-			var rb = pd["raw"]
-			if rb != null:
-				other["%08x" % n32] = [th, (rb as PackedByteArray).hex_encode()]
-	# The variant is named by what it BINDS, the same data-driven rule the glass
-	# and carpaint fingerprints use — never by the map or by a texture name.
-	var variant := "foam"
-	if tex.has("detail_nsh") or tex.has("foam_nsh"):
-		variant = "ocean"
-	# Normalised colours, so a consumer does not have to know which variant it
-	# got. Which of the foam variant's two float3s is shallow and which is deep
-	# is NOT settled — see water.gdshader.
-	var shallow: Array = []
-	var deep: Array = []
-	if variant == "ocean":
-		# ONE colour, and "deep" is deliberately left absent rather than set to
-		# the same value: the consumer's fallback darkens it, and writing the
-		# identical colour into both would flatten the depth gradient to nothing
-		# while still looking like mined data.
-		shallow = color.get("%08x" % WSLOT_OCEAN_COLOR, [])
-	else:
-		shallow = color.get("%08x" % WSLOT_WATER_A, [])
-		deep = color.get("%08x" % WSLOT_WATER_B, [])
-	var out := {"variant": variant, "tex": tex, "asset": asset,
-		"color": color, "scalar": scalar, "other": other,
-		"key": BF6Depot.key_hex(key)}
-	if not shallow.is_empty():
-		out["shallow"] = shallow
-	if not deep.is_empty():
-		out["deep"] = deep
-	return out
-
-
-# One of the water textures as a Texture2D, by the file guid _water_look put in
-# the look dict. Goes through the ordinary texture path so it gets the same
-# cache, the same block compression and the same normal-map handling as every
-# other surface; `detail_nsh` and `foam_nsh` carry a normal in RG and are
-# tagged as such, because DXT-compressing a normal map bands every ripple.
-func water_texture(file_guid, is_normal := false):
-	return _texture_for(file_guid, is_normal, 0)
-
-
-# ---------------------------------------------------------------------------
-# WHAT DRIVES THE WAVES: WaterOceanSimulationEntityData.
-#
-# The depot record above says what the water is MADE of. It says nothing about
-# how it MOVES, because the wave field is a runtime GPU simulation and nothing
-# on disk holds the result. What IS on disk is the simulation's inputs, on a
-# WaterOceanSimulationEntityData in one of the level's *_schematic partitions,
-# and those are enough to give the preview the map's own wind direction, its own
-# roughness and its own crest sharpness instead of one fixed sine field.
-#
-# MEASURED ACROSS THE WHOLE GAME (40 instances in 21 partitions, reachable from
-# a single mount because the mount carries every level's bundles):
-#
-#   WindAngle    -0.08 .. 3.00      radians. NOT turns: 1.34 and 3.00 are out of
-#                                   a 0..1 range, and the spread sits inside
-#                                   -pi..pi. Which world axis 0 points down, and
-#                                   the sign, are NOT resolved - see below.
-#   WindSpeed     0.01 .. 0.75      NOT metres per second. Every calm MP water
-#                                   is 0.01, the windy ones 0.07, and the D-Day
-#                                   singleplayer sea 0.30-0.75. Used as a
-#                                   normalised roughness with 0.07 as neutral.
-#   Choppiness    0.005 .. 3.00     crest sharpness. mp_aftermath 0.02 (glassy),
-#                                   mp_tungsten 0.60, sp_invasion 3.00.
-#   FoamThreshold 0 .. 290          units unknown; used as a relative cutoff.
-#   TileDimension 0.01 .. 128       reported, NOT wired: 0.5 on mp_dumbo against
-#                                   128 on a singleplayer sea is not a metre
-#                                   count that a wavelength can be read out of.
-#
-# TWO OR MORE INSTANCES PER LEVEL, one flagged 0x6E8C0B93 and the others clear,
-# and what selects between them at runtime is not known. mp_tungsten's single
-# instance is CLEAR, so "take the flagged one" alone would leave the one true
-# ocean map with no wave data at all. The rule here is: prefer a flagged
-# instance, otherwise take the first - stated rather than hidden, because on
-# mp_isolated (four instances, two flagged, very different values) it is a
-# guess.
-const SIM_TYPE := "3ad51130-494f-ee8a-45cd-01103be713ee"
-const SIM_ENABLE := 0x6E8C0B93           # named from OceanComponentData.PropertyOverrides
-const SIM_WIND_ANGLE := 0x2BD08352
-const SIM_WIND_SPEED := 0x8613EBCA
-const SIM_CHOPPINESS := 0xD488F0CB
-const SIM_WIND_DIST := 0xA1E59641
-const SIM_FOAM_ENABLE := 0xF0340815
-const SIM_FOAM_THRESHOLD := 0xFFA1D0E2
-const SIM_FOAM_MAX := 0xF2C13BDD
-const SIM_TILE_DIM := 0x54A5216B
-const SIM_MIN_WAVELENGTH := 0x787474E1
-const SIM_LARGE_WAVE_RED := 0xC44A1FAF
-const SIM_WAVE_THICKNESS := 0xAA2BBED7
-
-# WindDistribution is a SplineCurve (type name hash 0x3A39B4F4), NOT a spectrum
-# of float4s. Its members are XValues0..2 (12 slots), YValues0..3 (16 slots),
-# GValues0..5 (tangents) and SplineType, which is an ENUM whose values are
-# literally 5, 9 and 13 CONTROL POINTS (exe_enum_values.tsv).
-#
-# The packing, derived and then checked against every instance in the game:
-# n control points use the first n-1 X slots with the LAST X implicit at 1.0
-# (12 X slots = 13-1), and the first n Y slots. mp_tungsten reads
-# X = 0, .092, .182, .362, .489, .662, .784, .900 (+1.0) with n = 9, which is
-# ascending and ends exactly where the implicit point would - that is the check.
-#
-# WHAT THE X AXIS MEANS IS INFERRED, not proved, and the inference is this:
-#   * X 0 and X 1 both carry Y ~ 0 on essentially every authored curve, which is
-#     the continuity condition of a function on a CIRCLE, not of a spectrum.
-#   * the common authored idiom is a single narrow lobe centred at X = 0.5
-#     (dsub_sp_nightraid is exactly 0, 0, 1, 0 over 0, .001, .575, .999) -
-#     a spreading function peaked on the wind direction.
-#   * the two presets of a level are MIRRORS of each other: mp_dumbo's flagged
-#     instance is Y = (0, 1.0, 0, 0.4, 0) and its clear one (0, 0.4, 0, 1.0, 0).
-#     Mirroring is a direction operation. A wavelength spectrum does not mirror.
-# So it is read as ENERGY BY DIRECTION, X mapping the full circle around
-# WindAngle. Read the other way (amplitude by wavelength) the same numbers would
-# still drive four wave components, just with the roles of the two axes swapped.
-#
-# GValues are non-zero on 15 of the 40 instances, so the curve is not always
-# piecewise linear. It does not matter here: only the control points are used,
-# and a control point is where the author put a lobe.
-const SIM_CURVE_TYPE := 0xEC989148
-const SIM_CURVE_X := [0xA3F9DFEE, 0xAB145027, 0x4FBB37BF]
-const SIM_CURVE_Y := [0x57C358C3, 0xE9D446E7, 0xE4DA513E, 0xF324662A]
-const SIM_VEC4 := [0x3901DB14, 0x42FC0F5E, 0x32A99B9C, 0x7C8062F2]   # x,y,z,w BY OFFSET
-
-var _water_sim_done := false
-var _water_sim := {}
-
-
-# The open level's ocean simulation inputs, or {} when it declares none.
-#
-# Small on purpose: every value here rides in placements.json next to the water
-# planes, so a cached load with no game mount still gets the map's own wind and
-# choppiness. Textures need a mount; numbers do not.
-func water_sim() -> Dictionary:
-	if _water_sim_done:
-		return _water_sim
-	_water_sim_done = true
-	_water_sim = {}
-	if src == null or types == null:
-		return _water_sim
-	var lvl := _level_dir()
-	# Same ORDER-not-scope idiom as _water_partition: the shapes we have seen
-	# first (the _layers_content/water_shared ones and mp_granite's water_global
-	# both carry "water" in the name, mp_dumbo keeps it in default_schematic),
-	# then every other schematic under the level. A candidate list is a guess;
-	# the sweep behind it is the answer.
-	var named: Array = []
-	var rest: Array = []
-	# Snapshot: walking the live member races the catalogue republish.
-	var t_ebx: Dictionary = src.snap_ebx()
-	for k in t_ebx.keys():
-		var n := str(k)
-		if lvl != "" and not n.begins_with(lvl):
-			continue
-		if not n.contains("schematic"):
-			continue
-		if n.contains("water"):
-			named.append(n)
-		else:
-			rest.append(n)
-	named.sort()
-	rest.sort()
-	rest.push_front("%s/default_schematic" % lvl)
-	for n in named + rest:
-		var got := _sim_in(str(n))
-		if not got.is_empty():
-			_water_sim = got
-			_say("game source: ocean sim — %s, wind %.2f rad, speed %.3f, chop %.3f, %d wind lobe(s)"
-				% [str(n).get_file(), float(got.get("angle", 0.0)),
-				   float(got.get("speed", 0.0)), float(got.get("chop", 0.0)),
-				   (got.get("dist", []) as Array).size()])
-			break
-	return _water_sim
-
-
-func _sim_in(name: String) -> Dictionary:
-	var raw: PackedByteArray = src.get_ebx(name)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
-	if not e.parse(raw):
-		return {}
-	var first := {}
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i) != SIM_TYPE:
-			continue
-		var d = e.read_instance(i)
-		if not (d is Dictionary):
-			continue
-		var row := _sim_row(d as Dictionary, name, i)
-		if bool((d as Dictionary).get(SIM_ENABLE, false)):
-			return row                     # the flagged one wins outright
-		if first.is_empty():
-			first = row
-	return first
-
-
-func _sim_row(d: Dictionary, part: String, idx: int) -> Dictionary:
-	return {
-		"part": part, "index": idx,
-		"enabled": bool(d.get(SIM_ENABLE, false)),
-		"angle": float(d.get(SIM_WIND_ANGLE, 0.0)),
-		"speed": float(d.get(SIM_WIND_SPEED, 0.0)),
-		"chop": float(d.get(SIM_CHOPPINESS, 0.0)),
-		"foam": bool(d.get(SIM_FOAM_ENABLE, true)),
-		"foam_threshold": float(d.get(SIM_FOAM_THRESHOLD, 0.0)),
-		"foam_max": float(d.get(SIM_FOAM_MAX, 0.0)),
-		"tile": float(d.get(SIM_TILE_DIM, 0.0)),
-		"min_wavelength": float(d.get(SIM_MIN_WAVELENGTH, 0.0)),
-		"large_wave_reduction": float(d.get(SIM_LARGE_WAVE_RED, 0.0)),
-		"wave_thickness": float(d.get(SIM_WAVE_THICKNESS, 1.0)),
-		"dist": _sim_curve(d.get(SIM_WIND_DIST, null)),
-	}
-
-
-# WindDistribution's control points as [[x, y], ...], x ascending over 0..1.
-func _sim_curve(v) -> Array:
-	if not (v is Dictionary):
-		return []
-	var c: Dictionary = v
-	var n := int(c.get(SIM_CURVE_TYPE, 0))
-	if n < 2:
-		return []
-	var xs: Array = _sim_flat(c, SIM_CURVE_X)
-	var ys: Array = _sim_flat(c, SIM_CURVE_Y)
-	var out: Array = []
-	for i in range(n):
-		# the last control point's X is implicit at 1.0: 12 X slots hold 13-1
-		var x := 1.0
-		if i < n - 1 and i < xs.size():
-			x = float(xs[i])
-		var y: float = float(ys[i]) if i < ys.size() else 0.0
-		out.append([snappedf(x, 0.0001), snappedf(y, 0.0001)])
-	return out
-
-
-func _sim_flat(c: Dictionary, members: Array) -> Array:
-	var out: Array = []
-	for m in members:
-		var v = c.get(m, null)
-		for comp in SIM_VEC4:
-			out.append(float((v as Dictionary).get(comp, 0.0)) if v is Dictionary else 0.0)
-	return out
-
-
-# ---------------------------------------------------------------------------
 # THE MAP'S LIGHTS.
 #
 # 7,878 fixtures on Dumbo — 4,470 spot and 3,408 omni, the same set and the same
@@ -6713,7 +5866,6 @@ func release_caches() -> Dictionary:
 	_lighting_zones_cache.clear()
 	_lighting_zones_stats.clear()
 	_lighting_zones_done = false
-	_water_look_cache.clear()
 	_decal_tex_cache.clear()
 	# _dressed WAS MISSING, and it is the one that made the mesh half of this a
 	# lie. It holds [ArrayMesh, keys, scope, variation, name] for every mesh ever
@@ -6750,7 +5902,6 @@ func release_caches() -> Dictionary:
 	_scatter_cache.clear()
 	_scatter_done = false
 	_obj_lights.clear()
-	_water_sim.clear()
 	_hm.clear()
 	# Windows will often hold the freed pages rather than returning them to the
 	# OS, so Task Manager can stay high while this genuinely worked. Judge it by
@@ -6816,7 +5967,6 @@ func cache_stats() -> Dictionary:
 		"decal_tex": _decal_tex_cache.size(),
 		"smooth": _smooth_cache.size(),
 		"litpack": _litpack_cache.size(),
-		"water_look": _water_look_cache.size(),
 	}
 	var meshes := 0
 	var surfaces := 0

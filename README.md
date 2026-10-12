@@ -2,7 +2,7 @@
 
 Build Battlefield 6 Portal maps in the SDK's Godot editor while seeing the
 **real game** — fully-textured high-poly models, the full map terrain, the
-original object layouts, and water — instead of grey proxy boxes on a floating
+original object layouts — instead of grey proxy boxes on a floating
 green island.
 
 Everything the plugin adds is an **editor-only overlay**:
@@ -187,9 +187,9 @@ extracted out of the game:
 
 | Control | What it does |
 |---|---|
-| **Extended Terrain** | The real ground and water surrounding the play area, at the exact in-game height — the whole map, not just the SDK bowl. The ground is built from the level's own terrain materials rather than a projected aerial photo. |
+| **Extended Terrain** | The real ground surrounding the play area, at the exact in-game height — the whole map, not just the SDK bowl. The ground is built from the level's own terrain materials rather than a projected aerial photo. |
 | **Backdrops** | The distant skyline and out-of-bounds scenery: bridges, city facades, hills a kilometre or more out. Off by default because it is heavy and sits well outside the area you build in. Draws whether or not the extended terrain is on. |
-| **Water** | The level's rivers, harbours and sea at the real height. Ripple speed follows the water setting in Configure Shaders, where zero holds it still. |
+| **Water** | Removed in the fork (F-07): the map's own SDK water plane always shows. |
 | **Original map objects** | The game's original per-object placements — buildings, vehicles, props — instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and returns exactly as you left it. Appearance follows Detail Mode; distance follows Range. |
 | **Prop Lighting** | The lights a placed prop carries in the game, plus the glow on its bulbs, screens and lit signs. Both come from the level's own data. |
 | **Grass** | Vegetation scatter from the game's own clutter catalogue, placed procedurally around the editor camera, with a density slider (1.0 = the catalogue's budget). |
@@ -251,8 +251,8 @@ it, which is what makes it fixable.
 ## What is in this addon, and where it came from
 
 **No Battlefield content ships with this plugin.** Everything in
-`addons/highpoly_toggle/` is our own work: the GDScript, the shaders and the
-water styling. (The fork removed the launch animation, the logo and the UI
+`addons/highpoly_toggle/` is our own work: the GDScript and the shaders.
+(The fork removed the water styling, F-07, and the launch animation, the logo and the UI
 font, F-01.)
 
 Game art is never bundled. It is read from the player's own installed copy of

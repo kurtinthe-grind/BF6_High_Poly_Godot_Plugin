@@ -57,7 +57,7 @@
 
 **L5119-L5318 — Storage: usage, purge, cleanup.** `dir_usage_async()` L5120; `purge_map()` L5186; `purge_everything()` L5237; `cleanup_stale()` L5279.
 
-**L5320-L5419 — Water surfaces.** `_add_water_plane()` L5328 (`Water` group L5341-5345).
+**L5320-L5419 — Water surfaces.** *(Removed in the fork, F-07.)* `_add_water_plane()` L5328 (`Water` group L5341-5345).
 
 **L5420-L5766 — Heightfield terrain mesh.** `TERRAIN_CHUNKS` L5426 (16); `_build_terrain_from_heightmap()` L5434 (cache path L5450: `"%s/terrain_ck%d_s%d_v7.res"`; terrain-blend census log L5612 reads HighpolyGameSource.n_blend_slot/n_blend_named; raw `print()` at L5539 and L5615); `_heightmap_mesh()` L5637; `_skirt_arrays()` L5714.
 

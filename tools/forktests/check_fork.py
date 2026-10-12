@@ -50,6 +50,16 @@ RULES: dict[str, dict] = {
                    r"\bbuild_ui_theme\b", r"\bpanel_border\b", r"\b_maybe_play_splash\b",
                    r"HighpolyChip", r"\bBackdrop\.(sync|settle)\b", r"\bTINT_DEFAULT\b"],
     },
+    "F-07": {
+        "absent": ["highpoly_water.gd", "highpoly_native_water.gd", "water.gdshader",
+                   "water_native.gdshader"],
+        "forbid": [r"\bHighpolyWater\b", r"\bHighpolyNativeWater\b", r"\bmapctx_water\b",
+                   r"\bset_water_shown\b", r"\bset_sdk_water_hidden\b", r"\b_sdk_water_planes\b",
+                   r"\b_sdk_water_hidden\b", r"\b_add_water_plane\b", r"\blog_water_state\b",
+                   r"\b_show_water\b", r"\brefresh_water\b", r"\bwater_texture\b",
+                   r"\bwater_sim\b", r"\b_water_look\b", r"\bWATER_STATE_KEY\b",
+                   r"func water\(", r"\"water_lab\"", r"\"water\"\s*:", r"base_ripple"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -57,6 +67,7 @@ ENABLED: list[str] = [
     "F-03",
     "F-04",
     "F-01",
+    "F-07",
 ]
 
 

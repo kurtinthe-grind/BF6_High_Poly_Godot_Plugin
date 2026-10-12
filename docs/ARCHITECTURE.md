@@ -143,7 +143,7 @@ the same cache.
 
 - `_HIPOLY_PREVIEW` — a prop's Detail Mode overlay child.
 - `_COLLISION_VIS` — a prop's Collision overlay child.
-- `_MAP_CONTEXT` — the whole Map Context subtree (terrain/backdrop/props/water).
+- `_MAP_CONTEXT` — the whole Map Context subtree (terrain/backdrop/props; the fork removed water, F-07).
 - `_MAPTILE_DECAL` — the satellite maptile decal.
 
 Any traversal that walks the scene must skip these (Detail Mode scans,

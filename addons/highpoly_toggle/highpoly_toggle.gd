@@ -107,7 +107,6 @@ var col_alpha: HSlider
 var mapctx_on: Button        # Map Context enabled
 var mapctx_objects: Button   # show original map objects (lives under Detail Mode)
 var mapctx_backdrop: Button  # show the distant skyline / out-of-bounds vista
-var mapctx_water: Button     # show the level's rivers / harbour / sea
 var mapctx_roads: Button     # the street network baked onto the ground
 var mapctx_grass: Button     # ground clutter from the level's scatter catalogue
 var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
@@ -564,7 +563,6 @@ func _perf_state() -> Dictionary:
 		"map_context": chip.call(mapctx_on),
 		"objects": chip.call(mapctx_objects),
 		"backdrop": chip.call(mapctx_backdrop),
-		"water": chip.call(mapctx_water),
 		"fx": chip.call(mapctx_fx),
 		"lighting": chip.call(mapctx_light),
 		"contact_shading": chip.call(mapctx_gi),
@@ -575,7 +573,7 @@ func _perf_state() -> Dictionary:
 func _shed_map_context() -> int:
 	var r := EditorInterface.get_edited_scene_root()
 	var shed := 0
-	for c in [mapctx_on, mapctx_objects, mapctx_backdrop, mapctx_water,
+	for c in [mapctx_on, mapctx_objects, mapctx_backdrop,
 			mapctx_fx, mapctx_light]:
 		if c != null and (c as Button).button_pressed:
 			(c as Button).set_pressed_no_signal(false)
@@ -827,7 +825,7 @@ func _enter_tree() -> void:
 		mode_btn.add_item(Modes.label(id), id)
 	mode_btn.tooltip_text = "Low-Poly (what you export): only what the SDK ships.
 
-Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, water, skyline, lighting and the level's own objects.
+Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, skyline, lighting and the level's own objects.
 
 High-Poly: your pieces are swapped for the real game models too, in clay or with their real textures.
 
@@ -922,7 +920,7 @@ All of it is read from your own Battlefield 6 installation."
 	# visible while it is on
 	var mc_sub := _chip_row(host, 14)
 	mapctx_on = Theme_.chip("Extended Terrain")
-	mapctx_on.tooltip_text = "Adds the real ground and water that surround the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
+	mapctx_on.tooltip_text = "Adds the real ground that surrounds the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
 		if _locked(mapctx_on): return
 		var r0 := EditorInterface.get_edited_scene_root()
@@ -933,7 +931,7 @@ All of it is read from your own Battlefield 6 installation."
 		# independent now; Original map objects has its own switch.
 		# the SDK's own terrain slab sits exactly where ours goes
 		_sdk_terrain_hidden(v)
-		# fast show/hide of the built terrain/backdrop/water layers — the full
+		# fast show/hide of the built terrain/backdrop layers — the full
 		# rebuild also regenerated every map object. Falls back to the full
 		# apply when nothing is built yet or the detail mode changed.
 		if mapctx.set_context_shown(r0, v, _mapctx_tex_mode()):
@@ -983,25 +981,6 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_backdrop)
-
-	mapctx_water = Theme_.chip("Water")
-	mapctx_water.tooltip_text = "The rivers, harbours and sea the real level has, at the real height, so you can see what your build sits above. Rivers and lakes that live inside the terrain data are built as real surfaces with their own water level. Speed of the ripples follows the water setting in Configure Shaders, where zero holds it still. Some maps ship no water body at all, and a few (Battery, Contaminated) build their sea as ordinary scenery instead: the Backdrops layer draws those."
-	mapctx_water.toggled.connect(func(v: bool):
-		if _locked(mapctx_water): return
-		var r0 := EditorInterface.get_edited_scene_root()
-		# flip it if it exists; if not, build JUST this layer. Only a scene with
-		# no overlay at all needs the full apply.
-		if v and mapctx.ensure_layer(r0, "water", _mapctx_tex_mode()):
-			mapctx.set_water_shown(r0, true)
-			lbl.text = "Water shown"
-			_save_mapctx_state()
-			return
-		if mapctx.set_water_shown(r0, v):
-			lbl.text = "Water " + ("shown" if v else "hidden")
-			_save_mapctx_state()
-			return
-		_mapctx_changed())
-	mc_chips.add_child(mapctx_water)
 
 	# ROADS, SEPARATED FROM THE GROUND THEY SIT ON.
 	#
@@ -1300,7 +1279,6 @@ All of it is read from your own Battlefield 6 installation."
 	# which is gated), and the collision overlays (drawn from the scene itself).
 	_gate(mapctx_on, "The extended terrain")
 	_gate(mapctx_backdrop, "The distant skyline")
-	_gate(mapctx_water, "The water")
 	# Roads and Grass ride the extended terrain, so they are gated with it.
 	# Roads had the _locked() snap-back in its handler from day one but was
 	# never REGISTERED here, so on the Low-Poly rung it looked pressable and
@@ -1314,7 +1292,7 @@ All of it is read from your own Battlefield 6 installation."
 
 	var shader_btn := Button.new()
 	shader_btn.text = "Configure Shaders…"
-	shader_btn.tooltip_text = "Settings for the moving parts: rippling water, drifting smoke and swaying grass."
+	shader_btn.tooltip_text = "Settings for the moving parts: drifting smoke and swaying grass."
 	shader_btn.pressed.connect(_open_shader_dialog)
 	host.add_child(_centred(shader_btn))
 
@@ -1836,7 +1814,6 @@ All of it is read from your own Battlefield 6 installation."
 		"collision_alpha": SharedMenu.binding(col_alpha, ca_row, ca_lbl),
 		"terrain": SharedMenu.binding(mapctx_on),
 		"backdrops": SharedMenu.binding(mapctx_backdrop),
-		"water": SharedMenu.binding(mapctx_water),
 		"grass": SharedMenu.binding(mapctx_grass),
 		"objects": SharedMenu.binding(mapctx_objects),
 		"fx": SharedMenu.binding(mapctx_fx),
@@ -2494,7 +2471,6 @@ func _settings_snapshot() -> PackedStringArray:
 	out.append("%-22s %s" % ["map context", yn.call(mapctx_on)])
 	out.append("%-22s %s" % ["map objects", yn.call(mapctx_objects)])
 	out.append("%-22s %s" % ["skyline", yn.call(mapctx_backdrop)])
-	out.append("%-22s %s" % ["water", yn.call(mapctx_water)])
 	# No chip any more: they arrive with the ground. Reported from the map
 	# context so a saved log still says whether they are on screen - yn() would
 	# print "unavailable" for the missing button, which reads as broken.
@@ -2865,7 +2841,7 @@ func _restore_scroll(v: int) -> void:
 func _ui_chips() -> Array:
 	return [
 		["on", mapctx_on], ["objects", mapctx_objects],
-		["backdrop", mapctx_backdrop], ["water", mapctx_water],
+		["backdrop", mapctx_backdrop],
 		["fx", mapctx_fx], ["light", mapctx_light], ["gi", mapctx_gi],
 		["shadows", mapctx_shadows], ["maplights", mapctx_maplights],
 		["optimize", mapctx_optimize], ["col", col_chk], ["shape", shape_chk],
@@ -3833,7 +3809,6 @@ func _do_reset() -> void:
 			iso_chk, ovr_chk]:
 		if b: b.set_pressed_no_signal(false)
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
-	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
 	MapContextScript.show_fx_cards = false
 	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
@@ -3907,10 +3882,9 @@ func _check_scene_change() -> void:
 		ovr_chk.text = _override_label()
 	if mapctx_on: mapctx_on.set_pressed_no_signal(false)
 	if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
-	# the other two map-context layers reset with everything else, or the chips
-	# would claim a skyline and a sea that the new scene has not built
+	# the other map-context layers reset with everything else, or the chips
+	# would claim a skyline that the new scene has not built
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
-	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
 	if mapctx_roads:
 		mapctx_roads.set_pressed_no_signal(false)
 		if mapctx: mapctx.set_roads_shown(null, false)
@@ -3977,7 +3951,6 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# Nothing to fetch (the usual case once a map has been opened once), or the
 	# context is being switched off: one build, no intermediate state.
 	var bd: bool = mapctx_backdrop != null and mapctx_backdrop.button_pressed
-	var wt: bool = mapctx_water != null and mapctx_water.button_pressed
 	# ONE APPLY, ALWAYS. This used to build the terrain first, fetch the prop
 	# GLBs, then apply again with objects on top - a two-phase dance whose only
 	# purpose was to show something while a download ran. There is no download:
@@ -3991,9 +3964,9 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# silent, so the log cannot distinguish "the build was never reached" from
 	# "the build ran and produced nothing". One line here settles that the next
 	# time it happens instead of needing a reproduction.
-	Log.info("Map context apply: terrain=%s objects=%s backdrop=%s water=%s tex=%d map=%s"
-		% [str(on), str(objs), str(bd), str(wt), tex, map if map != "" else "<none>"])
-	var _res: String = await _apply_with_placements(r, on, objs, tex, bd, wt)
+	Log.info("Map context apply: terrain=%s objects=%s backdrop=%s tex=%d map=%s"
+		% [str(on), str(objs), str(bd), tex, map if map != "" else "<none>"])
+	var _res: String = await _apply_with_placements(r, on, objs, tex, bd)
 	Log.info("Map context apply returned: %s" % (_res if _res != "" else "<empty>"))
 	lbl.text = _res
 
@@ -4035,8 +4008,6 @@ func _wants_map_layers() -> bool:
 	if mapctx_objects != null and mapctx_objects.button_pressed:
 		return true
 	if mapctx_backdrop != null and mapctx_backdrop.button_pressed:
-		return true
-	if mapctx_water != null and mapctx_water.button_pressed:
 		return true
 	if mapctx_light != null and mapctx_light.button_pressed:
 		return true
@@ -4124,8 +4095,7 @@ func _mapctx_rebuild() -> void:
 	_mapctx_sync_wants()
 	lbl.text = await _apply_with_placements(r, true, mapctx_objects.button_pressed,
 		_mapctx_tex_mode(),
-		mapctx_backdrop != null and mapctx_backdrop.button_pressed,
-		mapctx_water != null and mapctx_water.button_pressed)
+		mapctx_backdrop != null and mapctx_backdrop.button_pressed)
 
 
 # THE ONLY WAY THE MAP CONTEXT IS APPLIED, so the placement walk cannot be
@@ -4140,7 +4110,7 @@ func _mapctx_rebuild() -> void:
 # Guarding each caller is what produced that bug, so there is one chokepoint now
 # and both callers go through it. ensure_placements returns immediately when the
 # walk has already run, so this costs nothing on the common path.
-func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bool) -> String:
+func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool) -> String:
 	# GATED ON WHAT CONSUMES THE WALK, which is the objects and the skyline.
 	#
 	# This read `if on`, and `on` is the flag the log prints as "terrain". A user
@@ -4168,18 +4138,18 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bo
 			and not mapctx.game_source.placements_ready:
 		await _ensure_placements_async(mapctx.game_source)
 	# THE MAP DATA TOO, for the same reason and with the same gate apply uses
-	# (need_data = terrain or objects or backdrop or water). apply() calls
+	# (need_data = terrain or objects or backdrop). apply() calls
 	# map_data on the MAIN thread, and the first ask decodes the heightfield,
 	# drapes the roads and mines any wanted section - the 35-44 s freezes the
 	# stall table blamed on "idle" (task #91). Mining it here on a worker turns
 	# apply's own call into a dictionary return. The want dict must be the one
 	# apply will pass, or apply's ask still lazily fills the difference on the
 	# main thread - which is why the wants are synced first.
-	if (on or objs or bd or wt) and mapctx != null and mapctx.game_source != null:
+	if (on or objs or bd) and mapctx != null and mapctx.game_source != null:
 		_mapctx_sync_wants()
 		await _ensure_mapdata_async(mapctx.game_source,
-			{"lights": mapctx.want_lights, "fx": mapctx.want_fx, "water": wt})
-	return mapctx.apply(r, on, objs, tex, bd, wt)
+			{"lights": mapctx.want_lights, "fx": mapctx.want_fx})
+	return mapctx.apply(r, on, objs, tex, bd)
 
 
 # ONE READ WORKER AT A TIME, whichever layer asked for it.
@@ -4401,7 +4371,7 @@ func _auto_perf_settings() -> void:
 		banner.visible = true
 
 # ---------- Configure Shaders dialog ----------
-# Water Animation / Flipbook Animations / Foliage Wind — live uniforms on the
+# Flipbook Animations / Foliage Wind — live uniforms on the
 # overlay's shader materials (no rebuild), persisted project-wide.
 func _open_shader_dialog() -> void:
 	var d: Dictionary = HighpolyMapContext.shader_prefs
@@ -4416,22 +4386,6 @@ func _open_shader_dialog() -> void:
 		EditorInterface.get_editor_settings().set_project_metadata(
 				"highpoly_mapctx", "_shaders", HighpolyMapContext.shader_prefs)
 		lbl.text = mapctx.apply_shader_prefs(EditorInterface.get_edited_scene_root())
-
-	var w_lbl := Label.new(); w_lbl.text = "Water Animation"
-	box.add_child(w_lbl)
-	var w_row := HBoxContainer.new(); box.add_child(w_row)
-	var w_sl := HSlider.new()
-	w_sl.min_value = 0.0; w_sl.max_value = 2.0; w_sl.step = 0.05
-	w_sl.value = float(d.get("water", 1.0))
-	w_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	w_sl.tooltip_text = "How fast the water ripples. 0 is completely still; 1 is the speed the real game uses."
-	w_row.add_child(w_sl)
-	var w_val := Label.new(); w_val.text = "×%.2f" % w_sl.value
-	w_row.add_child(w_val)
-	w_sl.value_changed.connect(func(v: float):
-		HighpolyMapContext.shader_prefs["water"] = v
-		w_val.text = "×%.2f" % v
-		apply.call())
 
 	var f_lbl := Label.new(); f_lbl.text = "Flipbook Animations"
 	box.add_child(f_lbl)
@@ -4535,7 +4489,6 @@ func _save_mapctx_state() -> void:
 		"on": mapctx_on.button_pressed,
 		"objects": mapctx_objects.button_pressed,
 		"backdrop": mapctx_backdrop.button_pressed if mapctx_backdrop else false,
-		"water": mapctx_water.button_pressed if mapctx_water else false,
 		# defaults FALSE on read, like every other layer chip: a saved state from
 		# before this chip existed restores with the streets off, same as any
 		# layer you have not asked for.
@@ -4660,8 +4613,6 @@ func _restore_mapctx_state() -> void:
 	# something you ask for rather than something that arrives with the map.
 	if mapctx_backdrop:
 		mapctx_backdrop.set_pressed_no_signal(bool(d.get("backdrop", false)))
-	if mapctx_water:
-		mapctx_water.set_pressed_no_signal(bool(d.get("water", false)))
 	# Pushed into the map context by hand: set_pressed_no_signal skips the
 	# handler, so without this the chip and the built node could disagree.
 	# ROADS ARE ALWAYS SHOWN NOW, and this has to be pushed rather than left to
@@ -4751,7 +4702,7 @@ func _restore_mapctx_state() -> void:
 	# where that combination lives now. Nothing is re-downloaded; it is the same
 	# cache, re-labelled.
 	if saved_tex == MODE_SDK and (bool(d.get("on", false)) or bool(d.get("objects", false)) \
-			or bool(d.get("backdrop", false)) or bool(d.get("water", false)) \
+			or bool(d.get("backdrop", false)) \
 			or bool(d.get("light", false)) or bool(d.get("fx", false))):
 		saved_tex = MODE_LIGHT
 	if mode_btn != null and saved_tex != mode_btn.get_selected_id():
@@ -5101,7 +5052,6 @@ func _mapctx_changed() -> void:
 	var on := mapctx_on.button_pressed
 	var objs := mapctx_objects.button_pressed
 	var bd := mapctx_backdrop != null and mapctx_backdrop.button_pressed
-	var wt := mapctx_water != null and mapctx_water.button_pressed
 	var tex := _mapctx_tex_mode()
 	var r := EditorInterface.get_edited_scene_root()
 	var rn := "<none>" if r == null else String(r.name)
@@ -5110,7 +5060,7 @@ func _mapctx_changed() -> void:
 	# Backdrops on with the terrain and objects off fell into the branch below,
 	# which applies with backdrop=false and returns, so the toggle did nothing
 	# unless Extended Terrain happened to be on as well.
-	if not on and not objs and not bd and not wt:
+	if not on and not objs and not bd:
 		# no layer wanted at all. Textures can still drape the SDK's shipped
 		# maptile over the default terrain (no download needed)
 		lbl.text = mapctx.apply(r, false, false, tex); return
@@ -5724,8 +5674,6 @@ static func _layer_chip_name(group: String) -> String:
 			return "Backdrops"
 		"Props":
 			return "Original map objects"
-		"Water":
-			return "Water"
 		"Roads":
 			return "Roads"
 		"FXCards":

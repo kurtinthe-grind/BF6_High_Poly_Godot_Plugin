@@ -174,7 +174,7 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 
 ### Features → atlas/features.md
 - decalproject (641) road-decal projector (receiver shapes + stats contract)
-- lighting (1,390) sun/sky/env/zones/fixtures · fx (877) live emitters · water (306)
+- lighting (1,390) sun/sky/env/zones/fixtures · fx (877) live emitters · water (306, **removed in the fork, F-07**)
 - markers (417) fault markers (report = the point) · gamemode (495) + gmmine (513)
 - scatter (808) ground scatter · bctex (498) texture sidecars + pool
 - hlod (617) OFF · rsprops (216) OFF · occluders (128) OFF · placedcull (324) on-hidden

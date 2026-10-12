@@ -49,7 +49,7 @@ const SHADOW_PASSES := 4      # directional cascades; only counted for casters
 
 # Children of _MAP_CONTEXT that get their own row rather than being pooled.
 const MAPCTX_PARTS := {"Terrain": true, "Backdrop": true, "Props": true,
-	"Roads": true, "Water": true}
+	"Roads": true}
 
 var recording := false
 var _samples: Array = []          # [{t, fps, ms, draws, prims, objs, vram, campos}]

@@ -97,6 +97,8 @@ The hardware assemblers, called from `highpoly_lib._asset_id` (`soldier://`, `ve
 No class_name; preloaded (toggle:69), dispatched after doors (toggle:5355/5357). `order` :78, `click` :109 (same walk as doors), `cycle` :148 (may return `{"fetch": key}`). `print()` :182 bypasses Log.
 
 ## highpoly_water.gd (306)
+> Removed in the fork (F-07), with highpoly_native_water.gd and both water shaders.
+
 `class_name HighpolyWater`. Water ShaderMaterial: `KIND_PRESETS` :18, 8-wave field from `WaterOceanSimulationEntityData` (`WAVE_LENGTH_RATIO` powers of 1/φ :110). Ours-vs-theirs ledger :92-95. Unresolved: which foam float3 is shallow :258-264.
 
 ## Cross-file observations

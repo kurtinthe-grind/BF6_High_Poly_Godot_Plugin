@@ -51,7 +51,7 @@ func _init() -> void:
 	_ok("grass scatter split out of map context", L.has("grass scatter"))
 	_ok("prop light fixtures get their own row", L.has("prop light fixtures"))
 	_ok("terrain layer exists", L.has("terrain"))
-	_ok("water layer exists", L.has("water"))
+	_ok("an unnamed map-context child stays in the map context row", L.has("map context"))
 
 	# ---- a MultiMesh is one call per surface, NOT per instance
 	# props: 1 MMI, 4000 instances, 2 surfaces, casts, cascades = 4
@@ -90,10 +90,12 @@ func _init() -> void:
 	_eq("shadows-only pays cascades but no base draw", int(ro["calls"]), 3 * 4)
 
 	# ---- material_overlay is a second full pass
-	# water: 1 PlaneMesh, 1 surface, no shadow, overlay set
-	var wa: Dictionary = L["water"]
+	# overlay test node: 1 PlaneMesh, 1 surface, no shadow, overlay set. It shares
+	# the "map context" row with the _MAP_CONTEXT2 orphan below (1 surface,
+	# casts: 1 + 4 cascades = 5 calls), so the row is 2 + 5.
+	var wa: Dictionary = L["map context"]
 	_eq("overlay surfaces recorded", int(wa["overlay_surf"]), 1)
-	_eq("overlay doubles the base pass", int(wa["calls"]), 2)
+	_eq("overlay doubles the base pass", int(wa["calls"]), 2 + 5)
 	_ok("a PlaneMesh did not abort the walk (verts counted)", int(wa["verts"]) > 0)
 
 	# ---- material_override collapses every surface to one material
@@ -213,12 +215,14 @@ func _build() -> Node:
 	rmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
 	ro.add_child(rmi)
 
-	# water: a PlaneMesh, the primitive that used to throw, plus an overlay
+	# a PlaneMesh, the primitive that used to throw, plus an overlay. It used to
+	# be the water layer; the fork removed water (F-07), so it now sits under a
+	# plain map-context child and is counted in the "map context" row.
 	var wa := Node3D.new()
-	wa.name = "Water"
+	wa.name = "OverlayTest"
 	ctx.add_child(wa)
 	var wmi := MeshInstance3D.new()
-	wmi.name = "_WATER"
+	wmi.name = "_PLANE"
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(100, 100)
 	keep.append(pm)

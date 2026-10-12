@@ -93,7 +93,6 @@
           "controls": [
             "terrain",
             "backdrops",
-            "water",
             "grass",
             "objects",
             "fx",
@@ -126,7 +125,6 @@
           "controls": [
             "configure_shaders",
             "wind",
-            "water_lab",
             "performance"
           ]
         }
@@ -257,15 +255,6 @@
         "godot"
       ]
     },
-    "water": {
-      "label": "Water",
-      "tip": "Show the water surfaces read from this level.",
-      "kind": "toggle",
-      "engines": [
-        "godot",
-        "unreal"
-      ]
-    },
     "grass": {
       "label": "Grass",
       "tip": "Show ground clutter near your camera. Adds rendering work.",
@@ -380,14 +369,6 @@
       "label": "Wind",
       "tip": "Adjust preview wind settings.",
       "kind": "toggle",
-      "engines": [
-        "unreal"
-      ]
-    },
-    "water_lab": {
-      "label": "Water Lab",
-      "tip": "Inspect and adjust water preview settings.",
-      "kind": "action",
       "engines": [
         "unreal"
       ]

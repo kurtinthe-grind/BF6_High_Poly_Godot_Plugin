@@ -94,7 +94,6 @@ const ROOTS := {
 const PARTS := {
 	"Terrain": "terrain",
 	"Roads": "roads",
-	"Water": "water",
 	"Backdrop": "skyline",
 	"Props": "props",
 	"_SCATTER": "grass scatter",
@@ -105,7 +104,7 @@ const PARTS := {
 # them promotes. FXCards lives under Props or under Backdrop depending on which
 # builder made it, so the promotion has to survive one level of nesting.
 const PART_FAMILY := {
-	"map context": true, "terrain": true, "roads": true, "water": true,
+	"map context": true, "terrain": true, "roads": true,
 	"skyline": true, "props": true, "fx cards": true, "grass scatter": true,
 }
 
