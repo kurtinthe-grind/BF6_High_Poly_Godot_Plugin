@@ -25,29 +25,7 @@ keep running. Its position and open/closed state are remembered per project.
 
 ## Look
 
-Season 4 (Pacific Front) styling: a looping wave backdrop under white controls
-on translucent white masks, inside a bright blue outline. **Every** open plays a
-short boot sequence: waves, then the Portal logo, then the backdrop dims and
-the controls fade in — about five seconds. **Click anywhere to skip it.**
-
-Costs are contained rather than assumed away:
-
-- The video pauses the moment the panel is closed, so a shut panel decodes
-  nothing.
-- It is encoded at 480×800 (0.8 MB), not at source resolution — it sits behind
-  UI at ~28% brightness, so there is nothing to gain from more pixels.
-- The control theme is set on the panel root only. Items it doesn't define fall
-  through to your editor theme, and the rest of the SDK is untouched.
-
-All of it is data, replaceable without a plugin release:
-`theme.json` (palette and backdrop dim), `logo.png` (the flash),
-`waves.ogv` (the backdrop), `ui_font.ttf` (the face).
-Delete any of them and that part is simply skipped — no font falls back to your
-editor's, no video leaves a flat dark panel.
-
-The font keeps a fallback chain (editor font, then Godot's built-in), because a
-display face is cut for headlines and doesn't carry every character a settings
-panel prints.
+The panel uses the Godot editor theme.
 
 ## Viewport double-click
 

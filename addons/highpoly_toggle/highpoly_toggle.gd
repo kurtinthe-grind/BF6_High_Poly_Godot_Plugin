@@ -23,18 +23,13 @@ var _menu_bindings: Dictionary = {}
 
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
-var dock_root: Control             # panel root: scroller + the boot overlay
+var dock_root: Control             # panel root: holds the scroller
 var win: Window                    # the floating tool panel itself
 var tools_btn: Button              # "High-Poly Tools" in the 3D viewport toolbar
 var _win_rect: Rect2i              # remembered across sessions; zero = never opened
-var video: VideoStreamPlayer       # looping backdrop; paused only when its host is hidden
-var tint: ColorRect                # darkens the backdrop behind the controls
-var border: Panel                  # the outline
-var boot: Node                     # the running boot sequence, if one is playing
 var tips: Control                  # hover descriptions, drawn inside the panel
 var _menu_sections: Dictionary = {}
 var sections: Array = []           # collapsible sections, in dock order
-var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
 var ovr_chk: Button          # per-selection detail override (live, contextual label)
@@ -93,8 +88,6 @@ const ShapeViz = preload("highpoly_shapeviz.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
 const SharedMenu = preload("highpoly_menu.gd")
-const Backdrop = preload("highpoly_backdrop.gd")
-const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
 var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
@@ -1901,9 +1894,7 @@ All of it is read from your own Battlefield 6 installation."
 	dock_scroll = ScrollContainer.new()
 	dock_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	dock_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# Inset the controls off the panel edge. Only the scroller is inset — the
-	# video, the tint and the outline stay full-bleed, so the border frames the
-	# backdrop rather than the buttons.
+	# Inset the controls off the panel edge.
 	dock_scroll.offset_left = SharedMenu.number("padding_x", PANEL_PAD)
 	dock_scroll.offset_right = -SharedMenu.number("padding_x", PANEL_PAD)
 	dock_scroll.offset_top = SharedMenu.number("padding_y", PANEL_PAD_V)
@@ -1911,22 +1902,23 @@ All of it is read from your own Battlefield 6 installation."
 	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_scroll.add_child(dock)
-	# The panel root is a plain Control holding the scroller, so the boot
-	# animation can be a SIBLING covering the whole panel. Inside the scroller it
-	# would be sized and clipped by the panel's content instead of covering it.
+	# The panel root is a plain Control holding the scroller, so the hover
+	# descriptions can be a SIBLING covering the whole panel. Inside the scroller
+	# they would be sized and clipped by the panel's content instead.
 	dock_root = Control.new()
 	dock_root.name = "High-Poly"
 	dock_root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# white text on translucent white masks, over the darkened loop; set on the
-	# panel root only, so anything undefined still falls through to the editor
-	dock_root.theme = Theme_.build_ui_theme()
+	# The editor's own panel background, so the floating window looks like any
+	# other editor panel (the fork dropped the video backdrop, F-01).
+	var bg := Panel.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dock_root.add_child(bg)
 	dock_root.add_child(dock_scroll)
-	_build_backdrop()
+	tips = TipsScript.new()
+	dock_root.add_child(tips)
 	_build_tool_window()
 	_join_home_chrome()
-	# the boot sequence is started from the open path, not from visibility_changed:
-	# that signal also fires on close, and every route to opening the panel goes
-	# through the toolbar button's toggle anyway
 	# Undo what a KILLED bench run left in the user's editor settings. The bench
 	# harness is gone from the fork, but an older install that ran it may have
 	# left a park file with both idle sleeps at 0 - after which the editor
@@ -2986,9 +2978,6 @@ func _plugin_version() -> String:
 # own "Apply Texture" button, so both plugins are found in the same place.
 const WIN_SIZE := Vector2i(440, 900)
 const WIN_MIN := Vector2i(340, 380)
-const WAVES := "res://addons/highpoly_toggle/waves.ogv"
-const WAVES_META := "res://addons/highpoly_toggle/waves.json"
-const TINT_DEFAULT := 0.72     # how far the backdrop dims once the controls are up
 const PANEL_PAD := 16          # controls held off the outline, left/right
 const PANEL_PAD_V := 12        # ...and top/bottom
 
@@ -3421,80 +3410,6 @@ func _restore_section_state() -> void:
 		if is_instance_valid(sec) and ((want as Array).has(sec.title_lbl.text) or (want as Array).has(str(sec.get_meta("menu_id", "")))):
 			sec.set_open(true, false)
 
-# The panel is layered back-to-front:
-#   bg      opaque, so the panel is legible with no video at all
-#   video   the loop, cover-scaled and clipped
-#   tint    darkens the loop; the boot sequence animates this 0 -> the palette's tint
-#   scroll  the controls; the boot sequence fades this in
-#   boot    the logo flash, on top of everything, then gone
-#   border  the outline, always last so nothing paints over it
-func _build_backdrop() -> void:
-	var bg := ColorRect.new()
-	bg.color = Theme_.col("splash_bg")
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dock_root.add_child(bg)
-	dock_root.move_child(bg, 0)
-
-	var waves_path := SharedMenu.file("waves.ogv")
-	var waves_meta_path := SharedMenu.file("waves.json")
-	if FileAccess.file_exists(waves_path):
-		# built directly instead of load()ed: an editor plugin's assets can be
-		# dropped in or replaced without waiting for a reimport, same as the
-		# logo and the map tiles
-		var vs := VideoStreamTheora.new()
-		vs.file = waves_path
-		video = VideoStreamPlayer.new()
-		video.stream = vs
-		video.expand = true          # fills the node; _fit_video sizes the node
-		video.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		if "loop" in video:
-			video.loop = true
-		else:
-			video.finished.connect(func(): _sync_backdrop.call_deferred())
-		dock_root.add_child(video)
-		dock_root.move_child(video, 1)
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(waves_meta_path)) \
-			if FileAccess.file_exists(waves_meta_path) else null
-		if j is Dictionary:
-			_vid_size = Vector2(float((j as Dictionary).get("width", 480)),
-				float((j as Dictionary).get("height", 800)))
-
-	tint = ColorRect.new()
-	tint.color = Color(0, 0, 0, Theme_.num("tint", TINT_DEFAULT))
-	tint.set_anchors_preset(Control.PRESET_FULL_RECT)
-	tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dock_root.add_child(tint)
-	dock_root.move_child(tint, 2 if video != null else 1)
-
-	tips = TipsScript.new()
-	dock_root.add_child(tips)
-
-	border = Panel.new()
-	border.set_anchors_preset(Control.PRESET_FULL_RECT)
-	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	border.add_theme_stylebox_override("panel", Theme_.panel_border())
-	dock_root.add_child(border)
-
-	dock_root.clip_contents = true      # the cover-scaled video overhangs
-	dock_root.resized.connect(_fit_video)
-	dock_root.visibility_changed.connect(func(): _sync_backdrop.call_deferred())
-	dock_root.tree_entered.connect(func(): _sync_backdrop.call_deferred())
-	_fit_video()
-	_sync_backdrop.call_deferred()
-
-func _sync_backdrop() -> void:
-	Backdrop.sync(video, dock_root)
-
-# Cover, not contain: scale until the video covers the panel and let the excess
-# spill past the edges. Letterboxing a backdrop would put bars inside the border.
-func _fit_video() -> void:
-	if video == null or dock_root == null: return
-	if _vid_size.x <= 0.0 or _vid_size.y <= 0.0: return
-	var s := maxf(dock_root.size.x / _vid_size.x, dock_root.size.y / _vid_size.y)
-	video.size = _vid_size * s
-	video.position = (dock_root.size - video.size) * 0.5
-
 func _build_tool_window() -> void:
 	win = Window.new()
 	win.title = "High-Poly Tools"
@@ -3510,7 +3425,6 @@ func _build_tool_window() -> void:
 	win.exclusive = false      # never blocks the editor: keep building while it is open
 	win.hide()
 	win.close_requested.connect(_close_tools)
-	win.visibility_changed.connect(func(): _sync_backdrop.call_deferred())
 	EditorInterface.get_base_control().add_child(win)
 	win.add_child(dock_root)
 
@@ -3571,10 +3485,7 @@ func _dock_panel() -> void:
 	dock_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_root.custom_minimum_size = Vector2(260, 220)
 	add_control_to_dock(DOCK_SLOT, dock_root)
-	# Docking is a visible home, not a closed panel. The visibility callback
-	# pauses decoding only while another tab actually hides the dock.
 	_stop_boot()
-	_sync_backdrop.call_deferred()
 
 
 # Take it back out of the dock and float it.
@@ -3614,8 +3525,6 @@ func _set_tools_visible(on: bool) -> void:
 		var pw := EditorInterface.get_base_control().get_window()
 		win.position = pw.position + (pw.size - win.size) / 2
 	win.show()
-	_sync_backdrop.call_deferred()
-	_maybe_play_splash()      # after show(): the sequence needs a visible panel
 
 # ---------------------------------------------------------------------------
 # BF6 HOME OWNS THE EDITOR WHILE ITS MAP MENU IS SHOWN.
@@ -3678,16 +3587,10 @@ func _apply_home_suppression() -> void:
 		if tools_btn != null and tools_btn.button_pressed:
 			_set_tools_visible(true)
 
-# Closing mid-sequence drops it. A hidden Window still processes, so left alone
-# the boot would carry on animating a panel nobody can see, and the next open
-# would find it already finished.
+# Closing or docking the panel hides any open hover description. (The boot
+# sequence this used to stop is gone with the fork's F-01.)
 func _stop_boot() -> void:
 	_tips_hide()
-	if is_instance_valid(boot):
-		boot.set_process(false)
-		boot.queue_free()
-		boot = null
-	Backdrop.settle(tint, dock_scroll, Theme_.num("tint", TINT_DEFAULT))
 
 func _close_tools() -> void:
 	# closing from the window's own X must not re-enter _set_tools_visible
@@ -3738,26 +3641,6 @@ func _set_window_layout(cfg: ConfigFile) -> void:
 		# first run. Docked is the safe home - visible, out of the way, and one
 		# click from floating.
 		_dock_panel.call_deferred()
-
-# Boot animation, played on every open.
-func _maybe_play_splash() -> void:
-	if win == null or not win.visible or dock_root == null: return
-	# a fast close-and-reopen must not leave two sequences fighting over the
-	# tint and the scroller's alpha
-	_stop_boot()
-	var s = SplashScript.new()
-	s.tint = tint
-	s.ui = dock_scroll
-	s.tint_max = Theme_.num("tint", TINT_DEFAULT)
-	if s.setup(video != null):
-		dock_root.add_child(s)
-		dock_root.move_child(s, dock_root.get_child_count() - 2)   # under the border
-		boot = s
-	else:
-		# nothing to play: make sure the panel is left in its finished state
-		s.free()
-		if tint: tint.color.a = Theme_.num("tint", TINT_DEFAULT)
-		if dock_scroll: dock_scroll.modulate.a = 1.0
 
 func _human_size(bytes: int) -> String:
 	if bytes >= 1073741824:

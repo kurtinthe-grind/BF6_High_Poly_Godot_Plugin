@@ -4,7 +4,6 @@ extends Window
 # snapshot and emits requests; it has no dependency on the map selector or editors.
 const Theme_ = preload("highpoly_theme.gd")
 const Menu = preload("highpoly_menu.gd")
-const Backdrop = preload("highpoly_backdrop.gd")
 signal pause_requested
 signal resume_requested
 signal return_requested
@@ -23,9 +22,6 @@ var _followed_map := ""
 var _pause: Button
 var _return: Button
 var _state: Dictionary = {}
-var _backdrop: Control
-var _video: VideoStreamPlayer
-var _video_size := Vector2(480, 800)
 var _host: Window
 
 const STAGES := [
@@ -94,7 +90,7 @@ func _ready() -> void:
 	exclusive = true
 	unresizable = true
 	close_requested.connect(func(): return_requested.emit())
-	_build_backdrop()
+	_build_background()
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
 	for side in ["left", "right", "top", "bottom"]:
@@ -104,7 +100,6 @@ func _ready() -> void:
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	margin.add_child(center)
 	var column := VBoxContainer.new()
-	column.theme = Theme_.build_ui_theme()
 	column.add_theme_constant_override("separation", 10)
 	column.custom_minimum_size = Vector2(860, 0)
 	center.add_child(column)
@@ -190,52 +185,14 @@ func _follow_map(level: String) -> void:
 	if is_instance_valid(_map_scroll) and _map_rows.has(level):
 		_map_scroll.ensure_control_visible(_map_rows[level].root)
 
-func _build_backdrop() -> void:
-	_backdrop = Control.new()
-	_backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_backdrop.clip_contents = true
-	_backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(_backdrop)
-	var background := ColorRect.new()
-	background.color = Theme_.col("splash_bg")
+# The editor's own panel background: this window is borderless and covers the
+# editor, so it needs something opaque behind the text. (The fork dropped the
+# wave video that used to sit here, F-01.)
+func _build_background() -> void:
+	var background := Panel.new()
 	background.set_anchors_preset(Control.PRESET_FULL_RECT)
 	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_backdrop.add_child(background)
-	if FileAccess.file_exists(Menu.file("waves.ogv")):
-		var stream := VideoStreamTheora.new()
-		stream.file = Menu.file("waves.ogv")
-		_video = VideoStreamPlayer.new()
-		_video.stream = stream
-		_video.expand = true
-		_video.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		if "loop" in _video:
-			_video.loop = true
-		else:
-			_video.finished.connect(func(): _sync_backdrop.call_deferred())
-		_backdrop.add_child(_video)
-		if FileAccess.file_exists(Menu.file("waves.json")):
-			var metadata: Variant = JSON.parse_string(FileAccess.get_file_as_string(Menu.file("waves.json")))
-			if metadata is Dictionary:
-				_video_size = Vector2(maxf(1.0, float(metadata.get("width", 480))), maxf(1.0, float(metadata.get("height", 800))))
-	var shade := ColorRect.new()
-	shade.color = Color(0, 0, 0, Theme_.num("tint", 0.72))
-	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
-	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_backdrop.add_child(shade)
-	_backdrop.resized.connect(_fit_backdrop)
-	visibility_changed.connect(func(): _sync_backdrop.call_deferred())
-	_fit_backdrop.call_deferred()
-	_sync_backdrop.call_deferred()
-
-func _fit_backdrop() -> void:
-	if not is_instance_valid(_video):
-		return
-	var scale := maxf(_backdrop.size.x / _video_size.x, _backdrop.size.y / _video_size.y)
-	_video.size = _video_size * scale
-	_video.position = (_backdrop.size - _video.size) * 0.5
-
-func _sync_backdrop() -> void:
-	Backdrop.sync(_video, _backdrop)
+	add_child(background)
 
 static func _percent(value: float) -> String:
 	return "%d%%" % int(floor(clampf(value, 0.0, 1.0) * 100.0))

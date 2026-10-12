@@ -42,12 +42,21 @@ RULES: dict[str, dict] = {
                    r"_cancel_previews_for_cache", r"\"Object previews\"",
                    r"_keep_service\(\"previews\"", r"_take_service\(\"previews\""],
     },
+    "F-01": {
+        "absent": ["highpoly_splash.gd", "highpoly_backdrop.gd", "logo.png", "waves.ogv",
+                   "waves.json", "ui_font.ttf"],
+        "forbid": [r"\bSplashScript\b", r"\bHighpolySplash\b", r"\bVideoStreamPlayer\b",
+                   r"\bVideoStreamTheora\b", r"waves\.(ogv|json)", r"logo\.png", r"ui_font",
+                   r"\bbuild_ui_theme\b", r"\bpanel_border\b", r"\b_maybe_play_splash\b",
+                   r"HighpolyChip", r"\bBackdrop\.(sync|settle)\b", r"\bTINT_DEFAULT\b"],
+    },
 }
 
 ENABLED: list[str] = [
     "F-05a",
     "F-03",
     "F-04",
+    "F-01",
 ]
 
 

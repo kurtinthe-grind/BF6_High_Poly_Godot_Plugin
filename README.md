@@ -251,8 +251,9 @@ it, which is what makes it fixable.
 ## What is in this addon, and where it came from
 
 **No Battlefield content ships with this plugin.** Everything in
-`addons/highpoly_toggle/` is our own work: the GDScript, the shaders, the
-launch animation (`waves.ogv`), the water styling, the logo, the UI font.
+`addons/highpoly_toggle/` is our own work: the GDScript, the shaders and the
+water styling. (The fork removed the launch animation, the logo and the UI
+font, F-01.)
 
 Game art is never bundled. It is read from the player's own installed copy of
 Battlefield 6 — see [`docs/V20-DESIGN.md`](docs/V20-DESIGN.md).

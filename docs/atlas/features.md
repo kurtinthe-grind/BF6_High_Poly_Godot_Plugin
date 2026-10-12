@@ -79,6 +79,8 @@ Dead: `_regenerate_now` :394-419 loop is unreachable. Two `print()`s :204/:280.
 `class_name HighpolySdkHide`. Hides `MP_<map>_Assets`/`_Terrain` stand-ins; memory-only memory (never set_meta — would serialize). `set_hidden` :51, `restore_all` :73. `_saved` keyed by instance id :28.
 
 ## highpoly_section.gd (204) / highpoly_tips.gd (145) / highpoly_splash.gd (124) / highpoly_theme.gd (258)
+> The fork removed highpoly_splash.gd and cut highpoly_theme.gd down to editor-neutral helpers (F-01).
+
 Panel chrome unit. Section: collapsible dock section, `setup` :55, `set_open` :165, signal `opened_changed`. Tips: adopted tooltips (`adopt` :59, meta `hp_tip` — also written by section:172, an undeclared contract). Splash: boot sequence (dead `Pal` preload :27). Theme: palette from `theme.json`, `chip()` :111, `bar()` :104, `build_ui_theme()` :170.
 
 ## highpoly_objdebug.gd (~470, added 2026-08-13)
