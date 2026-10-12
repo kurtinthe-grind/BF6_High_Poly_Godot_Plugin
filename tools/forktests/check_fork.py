@@ -125,6 +125,15 @@ RULES: dict[str, dict] = {
                    r"\bCONTAINER_SPATIAL_EDITOR_MENU\b", r"\"High-Poly Tools\"",
                    r"\b_first_run_open\b"],
     },
+    # C-01: caching is on demand for the open map - no launch-time run, no cover
+    # screen or editing lock, no all-maps order, no bf6_geom wipe, and the panel
+    # is gated on a detected install only.
+    "C-01": {
+        "absent": ["highpoly_preparation_screen.gd"],
+        "forbid": [r"\b_show_screen\b", r"\bediting_lock_changed\b", r"\bsuspend_viewports\b",
+                   r"\b_ordered_levels\b", r"_remove_tree\(\"user://bf6_geom\"\)",
+                   r"bool\(_preparation\.cache_ready\)", r"\bshow_deferred_screen\b"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -139,6 +148,7 @@ ENABLED: list[str] = [
     "F-08",
     "UI-01",
     "UI-02",
+    "C-01",
 ]
 
 

@@ -43,7 +43,6 @@ const HighpolyDoors = preload("highpoly_doors.gd")
 const GameDir = preload("highpoly_gamedir.gd")
 const Preparation = preload("highpoly_preparation.gd")
 var _preparation: VBoxContainer
-var _preparation_viewports: Array = []
 const HighpolyVariants = preload("highpoly_variants.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
@@ -306,31 +305,38 @@ func _build_bf6_gate() -> void:
 		EditorInterface.get_base_control().add_child(fd)
 		fd.popup_centered_ratio(0.6)
 		fd.close_requested.connect(func(): fd.queue_free()))
+	# THE CACHE ROW. Caching is on demand and for the open map only: nothing
+	# starts when the plugin is enabled, there is no cover screen and nothing is
+	# locked behind it (findings §3, C1-C15). The row says whether the open map
+	# is cached and offers "Cache this map".
 	_preparation = Preparation.new()
-	_preparation.foreground_owner = func(): return EditorInterface.get_base_control()
-	# High Poly stays locked until the up-front cache is complete.
-	_preparation.ready_changed.connect(func(_is_ready: bool): _apply_bf6_gate())
-	_preparation.editing_lock_changed.connect(func(locked: bool):
-		if locked:
-			if _preparation_viewports.is_empty():
-				var viewports: Array = []
-				for index in range(4):
-					var viewport := EditorInterface.get_editor_viewport_3d(index)
-					if viewport != null:
-						viewports.append(viewport)
-				_preparation_viewports = Preparation.Screen.suspend_viewports(viewports)
-		else:
-			Preparation.Screen.restore_viewports(_preparation_viewports))
 	_preparation.current_level = func():
 		var scene := EditorInterface.get_edited_scene_root()
 		if scene == null:
 			return ""
 		var level := MapContextScript.map_of(scene).to_lower()
-		if level in _preparation._levels:
+		if level != "":
 			return level
-		var references: Array = preload("highpoly_preparation_order.gd").scene_levels(scene.scene_file_path, _preparation._levels)
+		var known: Array = _preparation._levels
+		if known.is_empty():
+			return ""
+		var references: Array = preload("highpoly_preparation_order.gd").scene_levels(scene.scene_file_path, known)
 		return str(references[0]) if references.size() == 1 else ""
+	# Two processes indexing one map at once would race on the same index
+	# files, so a read already running in this editor wins.
+	_preparation.busy_reason = func() -> String:
+		return "The map is being read right now; press Cache this map once it finishes." \
+			if (_gs_opening or _read_worker_busy) else ""
+	_preparation.focus_requested.connect(_focus_dock)
+	_preparation.level_cached.connect(func(level: String):
+		lbl.text = "%s is cached. The next High-Poly build of it reads the index from disk." % level)
 	bf6_row.add_child(_preparation)
+	# The opt-in: off unless the user switched it on for this project.
+	_preparation.auto_chk.set_pressed_no_signal(bool(EditorInterface.get_editor_settings()
+		.get_project_metadata("highpoly", "auto_cache", false)))
+	_preparation.auto_chk.toggled.connect(func(on: bool):
+		EditorInterface.get_editor_settings().set_project_metadata("highpoly", "auto_cache", on)
+		lbl.text = "Auto-cache " + ("on: the open map is cached when High-Poly turns on." if on else "off."))
 
 	# Autodetect covers Steam and EA's usual folders plus every library in
 	# libraryfolders.vdf, so most people never touch this row.
@@ -379,8 +385,9 @@ func _set_game_dir(path: String, remember := true) -> void:
 func _apply_bf6_gate() -> void:
 	if dock == null or not is_instance_valid(dock):
 		return
-	# Locked until the install is verified AND the up-front cache has finished.
-	var open: bool = _bf6_ok and is_instance_valid(_preparation) and bool(_preparation.cache_ready)
+	# Locked only until an install is detected. NOT on the cache (C10): an
+	# uncached map builds cold, reading everything from the install.
+	var open: bool = _bf6_ok
 	for c in dock.get_children():
 		if c == bf6_row or c.has_meta("bf6_gate_exempt") or not (c is CanvasItem):
 			continue
@@ -1702,7 +1709,10 @@ All of it is read from your own Battlefield 6 installation."
 	Log.info("Panel opened")
 	_adopt_tips.call_deferred()
 	_auto_perf_settings.call_deferred()
-	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
+	# C14: the usage walk covers GBs of user:// and is only worth doing when
+	# someone is looking at it - so only with the Storage section open, and
+	# again whenever it is opened.
+	_refresh_storage_if_open.call_deferred()
 
 	# Adopted across a soft reopen when there is one to adopt, so the open game
 	# source, the built cell index and the rendered icons all survive a change to
@@ -3050,6 +3060,7 @@ func _section(id: String, section_title: String, description: String) -> Node:
 	sec.opened_changed.connect(func(open: bool):
 		_tips_hide()                    # the description answered its question
 		_save_section_state()
+		if open and id == "storage": _refresh_storage.call_deferred()
 		if open: _scroll_to.call_deferred(sec))
 	sections.append(sec)
 	return sec.content
@@ -3146,9 +3157,21 @@ func _storage_dirty() -> void:
 		_storage_timer = Timer.new()
 		_storage_timer.one_shot = true
 		_storage_timer.wait_time = 2.0
-		_storage_timer.timeout.connect(_refresh_storage)
+		_storage_timer.timeout.connect(_refresh_storage_if_open)
 		dock.add_child(_storage_timer)
 	_storage_timer.start()
+
+
+func _storage_open() -> bool:
+	var sec = _menu_sections.get("storage")
+	return sec != null and is_instance_valid(sec) and sec.is_open()
+
+
+func _refresh_storage_if_open() -> void:
+	if _storage_open():
+		_refresh_storage()
+	elif storage_lbl != null:
+		storage_lbl.text = "Open this section to measure disk usage."
 
 
 func _refresh_storage() -> void:
@@ -3364,6 +3387,8 @@ func _check_scene_change() -> void:
 	if r == _edited_root: return
 	var old := _edited_root
 	_edited_root = r
+	if is_instance_valid(_preparation):
+		_preparation.refresh_status()
 	if old != null and is_instance_valid(old):
 		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
 		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
@@ -4287,6 +4312,9 @@ func _mapctx_changed() -> void:
 			+ "building the map layers.")
 		await _await_flag("swapping placed objects",
 			func(): return _swap_busy)
+	if mapctx_on.button_pressed or mapctx_objects.button_pressed \
+			or (mapctx_backdrop != null and mapctx_backdrop.button_pressed):
+		await _auto_cache_open_map()
 	_save_mapctx_state()
 	_mapctx_gen += 1
 	var gen := _mapctx_gen
@@ -4381,6 +4409,29 @@ func _mapctx_changed() -> void:
 # point of the override, and gating on the scene mode meant it opened nothing,
 # resolved nothing and drew nothing - the one mode where the preview is the only
 # way to see a real model was the one mode where it could not work.
+# THE OPT-IN AUTO-CACHE (default off). When it is on and the open map is not
+# cached, cache it first and let the build that follows read the fresh index -
+# rather than run the worker and an in-editor cold read of the same map side by
+# side. With it off nothing waits: the map simply builds cold.
+func _auto_cache_open_map() -> void:
+	if not is_instance_valid(_preparation) or not _bf6_ok:
+		return
+	if not _preparation.auto_chk.button_pressed or not _ctx_allowed():
+		return
+	var level: String = _preparation._open_level()
+	if level == "" or _preparation.is_level_cached(level):
+		return
+	if not _preparation.is_running():
+		if not _preparation.cache_level(level):
+			return
+		Log.info("auto-cache: caching %s before the High-Poly build" % level)
+	var t0 := Time.get_ticks_msec()
+	while is_instance_valid(_preparation) and _preparation.is_running() \
+			and dock != null and dock.is_inside_tree():
+		await dock.get_tree().process_frame
+	Log.info("auto-cache: waited %.1f s for %s" % [(Time.get_ticks_msec() - t0) / 1000.0, level])
+
+
 func _ensure_source_for_mode(force := false) -> void:
 	if not force and _mode() == HighpolyLib.Tier.LOW:
 		return                       # the SDK's own proxies need nothing from us
@@ -4450,6 +4501,7 @@ func _mode_changed() -> void:
 	# model per prop, and with no game source open every one of those asks
 	# returns nothing. Awaiting here means the first switch to High-Poly in a
 	# session pays the read once and then actually swaps.
+	await _auto_cache_open_map()
 	await _ensure_source_for_mode()
 	# SAID, AND GIVEN A FRAME TO BE SEEN, before the swap starts. HighpolyLib
 	# .apply walks the whole scene and builds an overlay per prop in one
