@@ -1307,12 +1307,8 @@ All of it is read from your own Battlefield 6 installation."
 			lbl.text = "No outdated caches."
 			return
 		var dlg := ConfirmationDialog.new()
-		dlg.dialog_text = "Delete %d outdated cache file(s)?
-
-%s" % [names.size(),
-			"
-".join(Array(names).slice(0, 12)) + ("
-…" if names.size() > 12 else "")]
+		dlg.dialog_text = "Delete %d outdated cache file(s)?\n\n%s" % [names.size(),
+			"\n".join(Array(names).slice(0, 12)) + ("\n…" if names.size() > 12 else "")]
 		dlg.confirmed.connect(func():
 			var freed := HighpolyCacheSweep.remove(names)
 			lbl.text = "Removed %d file(s), %s freed." % [names.size(), _human_size(freed)]
