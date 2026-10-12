@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Static checks for the fork's removals and fixes.
+
+Each rule is keyed by a feature (F-0x) or bug (HP-0xx) id and lists files that
+must NOT exist in the addon and regex patterns that must NOT appear in the
+addon's .gd / .json / .gdshader / .cfg files or in shared/menu/*.json.
+A rule is enforced by default only once its id is in ENABLED, so a task turns
+its rule on first, watches it fail, then does the work.
+
+    python tools/forktests/check_fork.py          # every enabled rule
+    python tools/forktests/check_fork.py F-03     # one rule, enabled or not
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+ADDON = REPO / "addons" / "highpoly_toggle"
+SHARED_MENU = REPO / "shared" / "menu"
+SCANNED = (".gd", ".json", ".gdshader", ".cfg")
+
+RULES: dict[str, dict] = {
+}
+
+ENABLED: list[str] = [
+]
+
+
+def _scan_files() -> list[Path]:
+    out = [p for p in sorted(ADDON.iterdir()) if p.is_file() and p.suffix in SCANNED]
+    out += sorted(SHARED_MENU.glob("*.json"))
+    return out
+
+
+def check(rule_id: str) -> list[str]:
+    rule = RULES[rule_id]
+    problems: list[str] = []
+    for name in rule.get("absent", []):
+        if (ADDON / name).exists():
+            problems.append(f"{rule_id}: file still present: {name}")
+    pats = [re.compile(p) for p in rule.get("forbid", [])]
+    for f in _scan_files():
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for i, line in enumerate(text.splitlines(), 1):
+            for p in pats:
+                if p.search(line):
+                    problems.append(f"{rule_id}: {f.relative_to(REPO)}:{i}: "
+                                    f"/{p.pattern}/ -> {line.strip()[:100]}")
+    return problems
+
+
+def main(argv: list[str]) -> int:
+    ids = argv[1:] or ENABLED
+    unknown = [i for i in ids if i not in RULES]
+    if unknown:
+        print("unknown rule(s): " + ", ".join(unknown))
+        return 2
+    problems: list[str] = []
+    for i in ids:
+        problems += check(i)
+    for p in problems:
+        print(p)
+    print(f"check_fork: {len(ids)} rule(s), {len(problems)} problem(s)")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
