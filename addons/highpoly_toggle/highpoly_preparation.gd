@@ -153,6 +153,12 @@ func set_install(path: String) -> void:
 	if install == path:
 		return
 	_stop_all()
+	# Told to cancel above (its .cancel file stays for it to read; the
+	# outdated-cache sweep takes the leftovers). A job from the old install must
+	# not block, or be recorded by, the next run.
+	_jobs.clear()
+	_queue.clear()
+	_cancel_requested = false
 	install = path
 	identity = ""
 	_core = null
@@ -320,6 +326,10 @@ func _finish_check(result: Dictionary) -> void:
 		_record["reader"] = reader
 		_record["maps"] = {}          # map indexes follow the reader scripts
 	_save()
+	# Cancel pressed while the check ran: _stop_all had nothing to stop yet.
+	if _cancel_requested:
+		_cancelled()
+		return
 	if _requested.is_empty():
 		stage = Stage.IDLE
 		_message = ""
