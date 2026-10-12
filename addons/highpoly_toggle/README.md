@@ -1,8 +1,8 @@
 # BF6 High-Poly Preview
 
 Editor-only overlays for the BF6 Portal SDK: real high-poly models over the
-low-poly proxies, plus Map Context (full terrain, original object layouts,
-water) and viewport performance tools.
+low-poly proxies, plus Map Context (full terrain and original object
+layouts) and viewport performance tools.
 
 - The **low-poly proxy stays the source of truth** — it's what the `.tscn`
   saves and what the Portal exporter ships. This plugin never modifies it.
@@ -13,9 +13,9 @@ water) and viewport performance tools.
 
 1. Copy this folder to `addons/highpoly_toggle/` in the SDK Godot project.
 2. Enable it under Project → Project Settings → Plugins.
-3. The **High-Poly** tab appears in the editor's right-hand dock column (beside
-   Inspector, Signals and Groups) as soon as the plugin is enabled. Drag it to
-   any other dock slot like any editor panel; the editor remembers where.
+3. The **High-Poly** tab appears in the editor's right-hand dock column (the
+   lower slot, below the Inspector) as soon as the plugin is enabled. Drag it
+   to any other dock slot like any editor panel; the editor remembers where.
 
 Nothing is cached when Godot starts. Open a map and press **Cache this map** in
 the panel to prepare that map only; High-Poly also works on an uncached map
