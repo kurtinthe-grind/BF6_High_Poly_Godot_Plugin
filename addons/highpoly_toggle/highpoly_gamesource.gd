@@ -630,9 +630,15 @@ func build_report() -> PackedStringArray:
 			+ "%d placeholder sheet(s) refused, %d panel(s) without one"
 			% [int(tex_stats.get("carpaint_wrap_placeholder", 0)),
 			   int(tex_stats.get("carpaint_wrap_skipped", 0))])
-	out.append("  cache hits: %d of %d mesh asks served from disk (%.0f%%), "
+	out.append("  cache hits: %d of %d mesh asks served from the geometry pack (%.0f%%), "
 		% [n_geom_hit, maxi(1, asks), 100.0 * n_geom_hit / maxf(1.0, float(asks))]
-		+ "%d shared in memory, %d read from the install" % [n_mesh_shared, n_geom_miss])
+		+ "%d shared in memory, %d read from the install (COLD)" % [n_mesh_shared, n_geom_miss])
+	var _tex_asks := n_texpack_hits + int(tex_stats.get("decoded", 0))
+	out.append("  texture pack: %d of %d texture loads served from the pack (%.0f%%, %.2f s), "
+		% [n_texpack_hits, maxi(1, _tex_asks), 100.0 * n_texpack_hits / maxf(1.0, float(_tex_asks)),
+		   t_texpack_load / 1e6]
+		+ "%d decoded from the install (COLD), %d saved for next time"
+		% [int(tex_stats.get("decoded", 0)), n_texpack_saved])
 	out.append("  materials: %d built, %d from the cache (%.0f%% reuse); "
 		% [n_mat_built, n_mat_cached,
 		   100.0 * n_mat_cached / maxf(1.0, float(n_mat_built + n_mat_cached))]
@@ -641,7 +647,8 @@ func build_report() -> PackedStringArray:
 		   int(tex_stats.get("failed", 0))])
 	if n_geom_miss == 0 and asks > 0:
 		out.append("  NOTE: every mesh came from a cache. These per-mesh costs are")
-		out.append("  NOT what a first open pays. Delete user://bf6_geom to measure that.")
+		out.append("  NOT what a first open pays. Delete user://bf6_geom and user://bf6_tex")
+		out.append("  (or this map's folders in them) to measure that.")
 
 	# WHY SOME OF IT DREW WHITE, as a count rather than as a marker at a time.
 	#

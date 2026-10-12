@@ -508,6 +508,8 @@ func _ph_report(title: String) -> PackedStringArray:
 	out.append("  \"from\" says where the answer came from. A row marked cache is")
 	out.append("  cheap only because an earlier run paid for it. Rows marked")
 	out.append("  \"(of which)\" break down the row above and are not summed again.")
+	out.append("  \"cache write\" is a cold build saving for next time, never a hit;")
+	out.append("  \"install\" is cold work read from the game, \"engine\" is Godot's own.")
 	out.append("  %-42s %9s %7s %10s %11s  %s"
 		% ["phase", "wall", "calls", "items", "each", "from"])
 	var keys: Array = _ph_order.duplicate()
