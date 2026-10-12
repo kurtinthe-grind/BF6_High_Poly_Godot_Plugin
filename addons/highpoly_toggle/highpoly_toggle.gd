@@ -2622,37 +2622,63 @@ func _marked_meshes(root: Node) -> Array:
 # memory, which is no help to a file that was written an hour earlier.
 #
 # _apply_changes is the editor's "about to save" hook. Put the scene back to
-# stock here, let the save write a stock file, restore the preview on the next
-# frame. Cheap for the same reason a mode switch is cheap: the overlays stay
-# parented and only visibility flips, so nothing is rebuilt, re-fitted or
-# re-read. It costs two visibility walks per Ctrl+S.
+# stock here, let the save write a stock file, restore the preview right after.
+# The overlays stay parented and only visibility flips, so nothing is rebuilt,
+# re-fitted or re-read. The restore is synchronous and touches only what was
+# stocked: the overlays that were showing, on the scene that was stocked, and
+# nothing else. A swap pass the save interrupted is restarted afterwards.
+# Cost per Ctrl+S: four whole-scene walks to stock, one to restore, plus two
+# flags per shown prop.
 var _stocked_for_save := false
+var _stocked_root: Node = null       # the scene the guard changed, and only that one
+var _stocked_nodes: Array = []       # proxies whose overlay was showing before the save
+var _stocked_resume := false         # a swap pass was mid-flight when the save came
 
 func _apply_changes() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null or _stocked_for_save:
 		return
 	_stocked_for_save = true
+	_stocked_root = r
+	# A swap pass parked between slices would wake up against a stocked scene
+	# and start re-dressing it. Retire it now; it is restarted after the save.
+	_stocked_resume = _swap_busy
+	_swap_gen += 1
+	_swap_busy = false
 	PlacedCull.release(r)              # visibility_range_* back to what it was
 	SdkHide.restore_all(r)             # the level's own assets and terrain back
 	if mapctx != null:
 		mapctx.restore_sdk_decals()    # their ground decal back
-	HighpolyLib.restore(r)             # overlays hidden, SDK proxies shown
+	_stocked_nodes = HighpolyLib.restore_visible(r)   # overlays hidden, SDK proxies shown
 	# Deferred rather than awaited: the save runs the moment this returns, so
 	# anything queued here lands after the file has been written.
 	call_deferred("_unstock_after_save")
 
 
+# Put back exactly what _apply_changes took off, in one go, before the next
+# frame is drawn: the renderer never sees the stocked scene and nothing is
+# rebuilt. Only onto the scene that was stocked - after "close tab and save"
+# the edited scene is a different one and must be left alone.
 func _unstock_after_save() -> void:
 	if not _stocked_for_save:
 		return
-	_stocked_for_save = false
-	if EditorInterface.get_edited_scene_root() == null:
+	var r: Node = _stocked_root
+	var nodes := _stocked_nodes
+	var resume := _stocked_resume
+	_stocked_root = null
+	_stocked_nodes = []
+	_stocked_resume = false
+	if r == null or not is_instance_valid(r) \
+			or EditorInterface.get_edited_scene_root() != r:
+		_stocked_for_save = false
 		return
 	_sdk_assets_hidden(mapctx_objects != null and mapctx_objects.button_pressed)
 	_sdk_terrain_hidden(mapctx_on != null and mapctx_on.button_pressed)
-	await _apply_scene()
+	HighpolyLib.reshow(nodes, r)
 	_reapply_placed_cull()
+	_stocked_for_save = false
+	if resume:
+		_apply_scene()                 # finish the pass the save interrupted
 
 
 # THE BUILD AND THE PLACED PROPS ARE THE SAME WORK, done once.

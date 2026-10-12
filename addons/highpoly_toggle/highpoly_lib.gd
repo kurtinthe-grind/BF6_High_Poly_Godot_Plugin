@@ -239,6 +239,47 @@ static func restore(root: Node) -> int:
 				stack.append(c)
 	return count
 
+
+# restore(), for the save guard: the same walk, but it returns the proxies whose
+# overlay was SHOWING, so the guard can put back exactly those and nothing
+# else. An overlay hidden before the save (Low-Poly, the per-selection
+# override) must still be hidden after it.
+static func restore_visible(root: Node) -> Array:
+	var out: Array = []
+	if root == null: return out
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node.name == "_MAP_CONTEXT" or node.name == COL_NODE:
+			continue
+		if node is Node3D:
+			var hp := node.get_node_or_null(HP_NODE)
+			if hp != null and hp is Node3D:
+				if (hp as Node3D).visible:
+					out.append(node)
+				_show_proxy_only(node as Node3D)
+		for c in node.get_children():
+			if c.name != HP_NODE:
+				stack.append(c)
+	return out
+
+
+# The other half: the overlay back on, the proxy drawing nothing again. No
+# rebuild, no re-fit, no re-dress - the overlay never left its parent and its
+# materials were never touched, so two flags per prop is the whole cost.
+static func reshow(nodes: Array, scene_root: Node) -> int:
+	var n := 0
+	for node in nodes:
+		if not is_instance_valid(node) or not (node is Node3D):
+			continue
+		var hp := (node as Node3D).get_node_or_null(HP_NODE)
+		if hp == null or not (hp is Node3D):
+			continue
+		(hp as Node3D).visible = true
+		_set_proxy_visible(node as Node3D, false, scene_root)
+		n += 1
+	return n
+
 # Hide our overlay, reveal the SDK proxy underneath. The overlay is left parented
 # rather than freed so that switching back does not re-instantiate and re-fit
 # every model; teardown callers that need the files released free the subtree via
@@ -628,12 +669,15 @@ static func invisible_material() -> StandardMaterial3D:
 	return _invisible_mat
 
 
-static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
+static func _set_proxy_visible(node: Node3D, vis: bool, root_hint: Node = null) -> void:
 	# When HIDING (overlay active), user-placed nodes nested under this proxy
 	# are never touched — hiding a building's proxy must not vanish the props a
 	# builder parented under it. When SHOWING (back to Low-Poly), restore
 	# EVERYTHING — that also heals any geometry a pre-fix version wrongly hid.
-	var scene_root: Node = EditorInterface.get_edited_scene_root() if not vis else null
+	var scene_root: Node = null
+	if not vis:
+		scene_root = root_hint if root_hint != null \
+			else EditorInterface.get_edited_scene_root()
 	var stack: Array = []
 	for c in node.get_children():
 		if c.name != HP_NODE and c.name != COL_NODE:
