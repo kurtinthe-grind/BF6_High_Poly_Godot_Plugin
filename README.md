@@ -1,8 +1,126 @@
+## Fork changes (kurtinthe-grind)
+
+This fork is based on **2.8.0** of
+[TabbedScamper/BF6_High_Poly_Godot_Plugin](https://github.com/TabbedScamper/BF6_High_Poly_Godot_Plugin).
+It trims features, fixes save and scene-switch bugs, and changes how caching
+works. The original 2.8.0 README follows this section unchanged. Where the two
+disagree, this section describes the fork.
+
+### Removed
+
+- **Splash, logo and wave video.** The custom font and the Season 4 styling
+  are gone too. The panel uses the Godot editor theme.
+- **Self-update.** There is no "Update Plugin" or "Check for updates" button
+  and no live reload. The plugin makes no network requests. Fork updates come
+  from this repository, so ignore *Staying up to date* and *Live reload* below.
+- **Object Library icon swap.** The Object Library shows the SDK's own icons.
+  The plugin no longer uses `user://highpoly/thumbs`, and the plugin deletes
+  that folder.
+- **Soldier, loadout, vehicle and gameplay previews.** Spawners keep the SDK
+  marker, and the Loadout inspector is gone.
+- **Benchmark harnesses.** The autorun and flight benchmarks are removed.
+  **Record performance** in the Log section remains.
+- **Plugin water.** There is no Water chip and no plugin water surface. The
+  map's own SDK water plane always shows.
+- **Variant gameplay nodes.** The Variant dropdown only switches the map's
+  layers. It adds no game-mode nodes to your scene.
+- **FX and lighting options.** There are no FX emitters and no Lighting,
+  Shadows, Interior light, Map lights or Prop Lighting controls. The editor's
+  own preview sun and environment light the scene. **Ground photo** remains in
+  Map Context.
+- **The BF6 menu bar entry and the floating "High-Poly Tools" window.** The
+  3D-toolbar button and float/dock switching are also gone. Every action that
+  was in the menu is now on the panel.
+
+### Added and fixed
+
+- **Editor-themed panel with clear states.** An ON chip has an accent fill and
+  a tick. An OFF chip is flat with an outline and an empty box. Hover and
+  keyboard focus are visible, and disabled controls are dimmed. Section headers
+  show ▸/▾ and work from the keyboard.
+- **The panel is a permanent dock tab.** The **High-Poly** tab is in the
+  right-hand dock column (lower slot) from the moment the plugin is enabled.
+  You can drag it to any dock slot, and the editor remembers where.
+- **On-demand caching for the open map only.** Nothing runs when the editor
+  starts. There is no caching screen, no background worker and no lock. The
+  row at the top of the panel shows whether the open map is cached and offers
+  **Cache this map** (with **Cancel**). Only that map is cached. The optional
+  **Auto-cache** chip (off by default) caches the open map before a High-Poly
+  or map-layer build. An uncached map still builds; it reads from your install
+  the first time.
+- **Per-map geometry and texture cache packs.** The packs are
+  `user://bf6_geom/<map>…/` and `user://bf6_tex/<map>…/`. The first build of a
+  map writes them, and later builds of that map read meshes and textures from
+  them instead of the install. They are no longer deleted at launch. Damaged
+  segments are dropped and rebuilt.
+- **Narrower cache keys.** The ground packets, splat, heightfield, texture
+  order and texture caches are each keyed on the code that produces them. An
+  update that only touches the panel no longer invalidates them. The native
+  heightfield is read back from cache instead of being decoded on every open.
+- **The save guard no longer re-swaps.** On Ctrl+S the scene is put back to
+  stock for the save and restored in the same frame. It no longer starts the
+  "Swapping placed objects" job. A swap that the save interrupted is
+  restarted. Variant and door state stays in memory and is never written into
+  your `.tscn` (no `hp_variant` / `hp_door_open`).
+- **Scene switches use the editor's `scene_changed` signal.** The 0.5 s poll
+  is no longer used, so a Save All right after a tab switch writes a stock file.
+- **Freeze logging.** A freeze during the swap job is logged as "swapping
+  placed objects", not "idle". Any placed object that takes over a second is
+  logged by name. Scene-switch teardown and post-build work are timed in the
+  session log.
+- **Remove outdated caches** (Storage section). After you confirm, it deletes
+  superseded index files, older geometry and texture packs (keeping the newest
+  per map), old temp logs and stale caching job files.
+- **Other optimizations.** A repeat swap pass skips props whose look has not
+  changed. The texture read-ahead learns its misses. Type layouts are kept
+  across map opens. Kept precache records are evicted in O(1). Storage usage
+  is measured only while the Storage section is open. The log says "cache"
+  only for a real hit.
+
+### Testing
+
+```
+python tools/run_fork_tests.py
+```
+
+Set `GODOT_BIN` to the SDK's Godot 4.6 executable. The runner checks the
+static removal and fix rules, runs every `tools/forktests/test_*.gd` in a
+throwaway project, gates every script and shader, and runs a headless editor
+smoke test with the plugin enabled in a sandbox project. It must end with
+`FORK TESTS PASSED`. Also run `python tools/sync_shared_menu.py --check` and
+`python tools/sync_cache_dependencies.py`. Neither touches your live SDK
+project or its `user://` folder.
+
+### Manual checks still pending
+
+These need the real editor and a Battlefield 6 install. Try them in a sandbox
+copy of the SDK project first. The full tables are in the owner's
+verification notes, `2026-10-12-verification.md` sections 4, 4.1 and 4.2. That
+file is not in this repository.
+
+- **General smoke (M1–M9, M15).** The editor starts with no script errors. The
+  panel looks plain, with no update controls, network traffic, custom icons,
+  Loadout panel, Water chip or variant nodes. The map state restores after a
+  restart.
+- **Bug fixes (M10–M14).** Ctrl+S, including during a swap, writes a stock
+  `.tscn` with no swap bar. Save All and close-and-save across tabs leave stock
+  files. Freeze lines name the swap. Variant and door state is never saved.
+  Remove outdated caches lists only superseded items.
+- **UI, dock and caching (U1–U11).** There is no BF6 menu, toolbar button or
+  start-up caching. Chip and header states are visible. The dock tab stays
+  where you put it. An uncached map builds cold, and Cache this map caches
+  only that map. A second build is served from the packs: look for the
+  `cache packs for …` log line and a lower wall time. The heightfield is read
+  back. A UI-only edit leaves the ground packets alone. The scene-switch
+  timing line appears. Auto-cache works.
+
+---
+
 # BF6 High-Poly Preview (Portal SDK plugin)
 
 Build Battlefield 6 Portal maps in the SDK's Godot editor while seeing the
 **real game** — fully-textured high-poly models, the full map terrain, the
-original object layouts — instead of grey proxy boxes on a floating
+original object layouts, and water — instead of grey proxy boxes on a floating
 green island.
 
 Everything the plugin adds is an **editor-only overlay**:
@@ -71,9 +189,12 @@ download choice.
 
 ## Staying up to date
 
-- **Plugin updates come through this fork's own releases.** The fork removed
-  the self-updater, the update buttons and live reload (F-03); the plugin
-  makes no network requests.
+- **The plugin updates itself.** When a newer version exists an
+  **"Update Plugin → vX.Y.Z"** button appears; one click installs it.
+  **Check for updates** forces that check immediately, and since 2.0 it
+  applies the new code live in most cases rather than making you restart the
+  editor. When a change genuinely cannot be hot-applied it says so and offers
+  the button that can.
 - **Game data never goes stale.** There is nothing to re-sync after a
   Battlefield patch: the plugin reads whatever is installed at the moment you
   open a map. The build cache versions itself and is rebuilt when the reader
@@ -105,18 +226,23 @@ the streaming tree, roads and terrain decals, lights, water, the distant
 skyline, the vegetation scatter from the game's own clutter catalogue, and the
 sky from the level's own VisualEnvironment.
 
-**Effects.** Removed in the fork (F-08): no FX emitters or smoke cards are
-drawn. Volume decals still get real `Decal` nodes.
+**Effects.** FX flipbooks decode out of the install through a new AtlasTexture
+decoder, with the grid read from EBX rather than assumed. Emitters get the
+spawn rate, size, spread and lifetime the game actually authors, sprite
+emitters get billboards and volume decals get real `Decal` nodes.
 
-**Gameplay markers keep the SDK proxy.** The fork removed the soldier, weapon,
-loadout and vehicle previews (F-05b); spawners show the SDK's own markers.
+**Gameplay markers show what they spawn.** Vehicle spawners render the
+drivable vehicle. Player and AI spawners render a real soldier, correct per
+faction, assembled and dressed from the character bundles. The loot spawner
+renders its weapon, assembled part by part.
 
 **Interaction.** Pick mode clicks the original map objects and Tabs into their
 parts. High-poly objects can be selected and grabbed like anything else, with
 the proxy staying pickable but drawing nothing. Doors swing on their real
 hinges.
 
-**Live reload.** Removed in the fork (F-03).
+**Live reload.** *Check for updates* applies new plugin code without an editor
+restart in most cases, and says so plainly when a change cannot be hot-applied.
 
 **Speed.** Container mount 21.5 s to 0.81 s. Texture sharing across props took
 a build from 40.7 s to 30.4 s and VRAM from 15.5 GB to 7.8 GB. Building one
@@ -161,8 +287,10 @@ High-poly mode covers more than static props:
 - **Interactable doors swing.** Left **double-click** a door (DoorRural,
   BorderFenceDoor, ChickenWire, interior doors…) to animate it open/closed on
   its real hinge — check a doorway's clearance without leaving the editor.
-- **Gameplay spawners keep the SDK proxy.** The fork removed the soldier,
-  weapon, loadout and vehicle previews (F-05b).
+- **Gameplay spawners show what they spawn.** Vehicle spawners render the
+  actual drivable vehicle (wheels, tracks, mounted guns, livery), SpawnPoint /
+  AI Spawner show a real soldier, and the Loot Spawner shows its weapon —
+  instead of anonymous placeholder boxes.
 
 ### Collision
 See what the game will actually collide with:
@@ -181,13 +309,13 @@ extracted out of the game:
 
 | Control | What it does |
 |---|---|
-| **Extended Terrain** | The real ground surrounding the play area, at the exact in-game height — the whole map, not just the SDK bowl. The ground is built from the level's own terrain materials rather than a projected aerial photo. |
+| **Extended Terrain** | The real ground and water surrounding the play area, at the exact in-game height — the whole map, not just the SDK bowl. The ground is built from the level's own terrain materials rather than a projected aerial photo. |
 | **Backdrops** | The distant skyline and out-of-bounds scenery: bridges, city facades, hills a kilometre or more out. Off by default because it is heavy and sits well outside the area you build in. Draws whether or not the extended terrain is on. |
-| **Water** | Removed in the fork (F-07): the map's own SDK water plane always shows. |
+| **Water** | The level's rivers, harbours and sea at the real height. Ripple speed follows the water setting in Configure Shaders, where zero holds it still. |
 | **Original map objects** | The game's original per-object placements — buildings, vehicles, props — instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and returns exactly as you left it. Appearance follows Detail Mode; distance follows Range. |
-| **Prop Lighting** | Removed in the fork (F-08). Emissive sheets draw as authored; no prop light fixtures are added. |
+| **Prop Lighting** | The lights a placed prop carries in the game, plus the glow on its bulbs, screens and lit signs. Both come from the level's own data. |
 | **Grass** | Vegetation scatter from the game's own clutter catalogue, placed procedurally around the editor camera, with a density slider (1.0 = the catalogue's budget). |
-| **Range** | The one distance that governs everything: how far the borrowed scenery keeps drawing, and how far your own placed pieces keep drawing. At zero the borrowed scenery switches off entirely, leaving just your map. |
+| **Range** | The one distance that governs everything: how far the borrowed scenery, its effects and its lights keep drawing, and how far your own placed pieces keep drawing. At zero the borrowed scenery switches off entirely, leaving just your map. |
 | **Terrain** | Terrain mesh density (Full 1 m / High 2 m / Medium 4 m). Built once per level, then cached. |
 
 Trees and bushes render with proper leaf transparency, honouring the game's
@@ -197,10 +325,14 @@ There is nothing to press after a game patch. The plugin reads the installed
 game, so a patched map is simply the map it reads next time you open it.
 
 ### Lighting
-Removed in the fork (F-08): no Lighting, Contact shading, Shadows, Interior
-light, Map lights or Map and prop lights controls. The editor's own preview
-sun and environment light the scene; overlays 1.5 m and larger cast shadows
-under it. **Ground photo** stays, in the Map Context chip row.
+The level's own lighting, plus the one control that is deliberately not
+faithful:
+
+| Control | What it does |
+|---|---|
+| **Lighting** | Sun angle, exposure, sky, fog and cloud shadows read from the level's own VisualEnvironment, so the light matches the real map rather than Godot's default. |
+| **Shadows** | Sun shadows. Bounded by a radius around the camera and a minimum caster size, so buildings and vehicles cast while small props do not. Costs frame rate; switch it off if the view gets choppy. |
+| **Interior light** | Lifts the darkest areas — inside buildings, under bridges, the shadowed side of a wall — so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. |
 
 ### Storage and Log
 **Storage** reports what the read cache is using on disk and can open the
@@ -241,9 +373,8 @@ it, which is what makes it fixable.
 ## What is in this addon, and where it came from
 
 **No Battlefield content ships with this plugin.** Everything in
-`addons/highpoly_toggle/` is our own work: the GDScript and the shaders.
-(The fork removed the water styling, F-07, and the launch animation, the logo and the UI
-font, F-01.)
+`addons/highpoly_toggle/` is our own work: the GDScript, the shaders, the
+launch animation (`waves.ogv`), the water styling, the logo, the UI font.
 
 Game art is never bundled. It is read from the player's own installed copy of
 Battlefield 6 — see [`docs/V20-DESIGN.md`](docs/V20-DESIGN.md).
