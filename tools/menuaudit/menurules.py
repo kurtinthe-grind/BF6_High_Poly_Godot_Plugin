@@ -48,8 +48,6 @@ print("   A sub-option that stays ticked after its parent is switched off reads"
 print("   as 'this is on' when nothing is happening.")
 print("=" * 78)
 PARENTS = {
-    "mapctx_light": ["mapctx_gi", "mapctx_shadows", "mapctx_maplights",
-                     "mapctx_fill"],
     "col_chk": ["iso_chk", "col_alpha"],
     "mapctx_on": [],
     "mapctx_objects": ["mapctx_variant"],
