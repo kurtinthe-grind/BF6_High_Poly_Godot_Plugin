@@ -1627,6 +1627,10 @@ All of it is read from your own Battlefield 6 installation."
 	# everything, the status line included. And now that every control exists,
 	# re-apply it — it was built first, when there was nothing yet to grey out.
 	dock.move_child(bf6_row, 0)
+	# Readable states on every button (chips, actions, dropdowns): see
+	# HighpolyTheme.style_toggle. Run again from _adopt_tips for controls that
+	# are only created once the panel enters the tree.
+	Theme_.style_all(dock)
 	_apply_bf6_gate()
 
 	var ver_lbl := Label.new()
@@ -2655,6 +2659,7 @@ const PANEL_PAD_V := 12        # ...and top/bottom
 # control grows a description later (adopt() is idempotent).
 func _adopt_tips() -> void:
 	if tips == null or dock == null: return
+	Theme_.style_all(dock)
 	tips.adopt(dock)
 	# scrolling moves the controls out from under a shown box
 	var vs := dock_scroll.get_v_scroll_bar() if dock_scroll else null

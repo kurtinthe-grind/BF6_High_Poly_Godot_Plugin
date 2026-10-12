@@ -3,9 +3,12 @@ extends VBoxContainer
 class_name HighpolySection
 # A collapsible section: centred title over a line that fades out at both ends.
 #
-#   closed   title centred, both white. Hovering warms them to the accent and
-#            drops a description of what the section is for.
-#   opening  the description goes, the title settles solid accent, and the
+#   closed   "▸ Title" centred in the editor's text colour. Hovering warms it to
+#            the accent, shows a hand cursor and drops a description of what
+#            the section is for. The arrow says "this opens".
+#   focus    Tab reaches the header; Enter or Space toggles it, and a focus
+#            ring is drawn round the title so a keyboard user sees where it is.
+#   opening  the arrow turns to ▾, the description goes, the title settles solid accent, and the
 #            contents rise out from behind the line as they fade in, starting a
 #            little below it rather than flush against it.
 #   closing  the same in reverse.
@@ -43,14 +46,22 @@ var _open := false
 var _tw: Tween
 var _tw_hl: Tween
 
-# 0 = white, 1 = accent. Drives the title colour and the line together.
+const ARROW_CLOSED := "▸ "
+const ARROW_OPEN := "▾ "
+
+# 0 = text colour, 1 = accent. Drives the title colour and the line together.
+# The base is the editor's own text colour, not white: white vanished on a
+# light editor theme.
 var hl := 0.0:
 	set(v):
 		hl = v
 		if head: head.queue_redraw()
 		if title_lbl:
 			title_lbl.add_theme_color_override("font_color",
-				Color.WHITE.lerp(Pal.accent(), v))
+				_ink().lerp(Pal.accent(), v))
+
+static func _ink() -> Color:
+	return Pal.palette().font
 
 func setup(section_title: String, description: String) -> void:
 	_title = section_title
@@ -59,6 +70,10 @@ func setup(section_title: String, description: String) -> void:
 
 	head = Control.new()
 	head.mouse_filter = Control.MOUSE_FILTER_STOP
+	head.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	head.focus_mode = Control.FOCUS_ALL
+	head.focus_entered.connect(func(): head.queue_redraw())
+	head.focus_exited.connect(func(): head.queue_redraw())
 	head.tooltip_text = description      # adopted by the description box
 	head.draw.connect(_draw_head)
 	head.gui_input.connect(_head_input)
@@ -68,7 +83,7 @@ func setup(section_title: String, description: String) -> void:
 	add_child(head)
 
 	title_lbl = Label.new()
-	title_lbl.text = section_title
+	title_lbl.text = ARROW_CLOSED + section_title
 	title_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	title_lbl.add_theme_font_size_override("font_size", Pal.fs(int(Pal.SharedMenu.number("section_font", 16))))
 	head.add_child(title_lbl)
@@ -132,7 +147,12 @@ func _fit_content() -> void:
 func _draw_head() -> void:
 	if head == null: return
 	var y := _line_y()
-	var c := Color.WHITE.lerp(Pal.accent(), hl)
+	var c := _ink().lerp(Pal.accent(), hl)
+	if head.has_focus():
+		# the keyboard focus ring: an accent outline round the title
+		var fr := Rect2(title_lbl.position - Vector2(6, 1),
+			title_lbl.size + Vector2(12, 2))
+		head.draw_rect(fr, Pal.accent(), false, 2.0)
 	var x0 := EDGE
 	var x3: float = maxf(x0 + 4.0, head.size.x - EDGE)
 	var f: float = minf(FADE, (x3 - x0) * 0.45)
@@ -161,10 +181,18 @@ func _head_input(e: InputEvent) -> void:
 	if e is InputEventMouseButton and (e as InputEventMouseButton).pressed \
 			and (e as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		set_open(not _open)
+	elif e is InputEventKey and (e as InputEventKey).pressed and not (e as InputEventKey).echo \
+			and (e as InputEventKey).keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+		set_open(not _open)
+		if head != null and head.is_inside_tree():
+			head.accept_event()
 
 func set_open(v: bool, animate := true) -> void:
 	if _open == v and animate: return
 	_open = v
+	if title_lbl:
+		title_lbl.text = (ARROW_OPEN if v else ARROW_CLOSED) + _title
+		_place_title()
 	# The description belongs to the closed state: opening answers the question
 	# it was there to answer. Blanking the metadata is what the description box
 	# reads, so it simply has nothing to show while open.
@@ -178,7 +206,8 @@ func set_open(v: bool, animate := true) -> void:
 		content.size.x = body.size.x
 		# a VBox of wrapped rows only reports its true height once its children
 		# have been shaped, which happens on the next frame
-		await get_tree().process_frame
+		if is_inside_tree():
+			await get_tree().process_frame
 		if not _open: return             # closed again during that frame
 		target = content.get_combined_minimum_size().y + CONTENT_TOP
 
