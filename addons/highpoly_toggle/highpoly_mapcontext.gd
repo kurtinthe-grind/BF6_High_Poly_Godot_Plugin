@@ -4490,6 +4490,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	var _side_n := maxi(1, _side_writes.size())
 	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()          # cache written after the skyline is up
+	_flush_game_packs("skyline")
 	_ph("skyline: flush the fast-load sidecars",
 		Time.get_ticks_msec() - _t_side, _side_n, PH_WRITE)
 	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
@@ -4813,6 +4814,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	var _side_n := maxi(1, _side_writes.size())   # drained by the flush
 	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()
+	_flush_game_packs("props")
 	_ph("props: flush the fast-load sidecars",
 		Time.get_ticks_msec() - _t_side, _side_n, PH_WRITE)
 	_report_progress(true)
@@ -4905,6 +4907,17 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		"instances": _inst_made, "mmi": _mmi_made, "cells": _cells.size(),
 	})
 	build_finished.emit(_build_props)
+
+# The geometry and texture packs this build filled (OPT-01/02) are closed off
+# here, after the layer is on screen, so the next build of this map reads them.
+# flush_packs() also writes the hit/miss line to the session log.
+func _flush_game_packs(what: String) -> void:
+	if game_source == null or not game_source.has_method("flush_packs"):
+		return
+	var t := Time.get_ticks_msec()
+	game_source.flush_packs()
+	_ph("%s: close the geometry and texture packs" % what, Time.get_ticks_msec() - t, 1, PH_WRITE)
+
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
 # write the host's status label when one was injected; without a label, fall

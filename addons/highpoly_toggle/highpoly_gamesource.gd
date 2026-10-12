@@ -1,6 +1,7 @@
 @tool
 extends RefCounted
 class_name HighpolyGameSource
+const Pack = preload("highpoly_pack.gd")
 
 # The map, read from the player's own Battlefield 6 install.
 #
@@ -1532,8 +1533,8 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	# been built. Recorded here rather than left to be discovered from a build
 	# that is mysteriously slow again.
 	var geom_n := 0
-	if _geom_dir != "":
-		geom_n = DirAccess.get_files_at(_geom_dir).size()
+	if _geom_pack != null:
+		geom_n = int(_geom_pack.count())
 	note_phase("geometry cache open", Time.get_ticks_msec() - t, geom_n,
 		"meshes on disk",
 		FROM_CACHE if geom_n > 0 else FROM_INSTALL,
@@ -5159,6 +5160,7 @@ func compact_caches(root: Node) -> Dictionary:
 
 func release_caches() -> Dictionary:
 	var before := cache_stats()
+	flush_packs()
 	# The read-ahead serves this session's build; released with everything else.
 	_readahead_stop()
 	_pc_level = ""
@@ -5594,7 +5596,11 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	#
 	# This is a file derived from the player's own install, not a download. The
 	# same standard the walk cache and height_game.r16 already meet.
-	var cached = _geom_load(kc) if not _precache_active() else null
+	# NO LONGER SKIPPED UNDER THE PRECACHE (OPT-01). The precache stores byte
+	# locations, not built meshes: every mesh was still fetched, merged and
+	# sliced on every build, cached or not - the main reason a cached load
+	# looked the same as a cold one. The pack holds the finished surfaces.
+	var cached = _geom_load(kc)
 	if cached is ArrayMesh:
 		# UNLESS THIS SCOPE NEEDS THE MESH CUT DIFFERENTLY. The cached mesh was
 		# merged one surface per shader state, which is the right answer for
@@ -5632,10 +5638,13 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var _t1 := Time.get_ticks_usec()
 	var mat_us := 0
 	var assembled: Array = []
+	_captured = []
+	_capturing = _geom_pack != null
 	if maxi(lod, PROP_LOD) == 0:
 		assembled = _assemble_precached(res_name, scope, var_hash)
 	if assembled.is_empty():
 		assembled = _assemble_live(res_name, lod, scope, var_hash)
+	_capturing = false
 	if assembled.is_empty():
 		return null
 	n_geom_miss += 1
@@ -5666,8 +5675,9 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	# would hand the next scope a mesh split for someone else's colours; the
 	# merged spelling stays on disk and the ~2% of groups that need the split
 	# read the game again each session (n_pal_rebuilt).
-	if not split and not _precache_active():
-		_geom_save(kc, kept, am)
+	if not split:
+		_geom_save(kc, kept, am, _captured)
+	_captured = []
 	if prepare_geometry_only:
 		return am
 	_dress(am, kept, scope, var_hash)
@@ -5822,6 +5832,8 @@ func _surfaces_from_blob(b: PackedByteArray, res_name: String, scope: String, va
 		t_asm_slice += _tsurf - _tarr
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		am.surface_set_name(am.get_surface_count() - 1, sname)
+		if _capturing:
+			_captured.append([sname, arr])
 		t_asm_surface += Time.get_ticks_usec() - _tsurf
 		kept.append(sname)
 	t_asm_build += Time.get_ticks_usec() - _td
@@ -6131,6 +6143,8 @@ func _assemble_script(d: PackedByteArray, info: Dictionary, li: int, chunk: Pack
 		# thing to be missing.
 		var sname := _surface_name(str(key), key_sel, key_canon)
 		am.surface_set_name(am.get_surface_count() - 1, sname)
+		if _capturing:
+			_captured.append([sname, arr])
 		# `kept`, not `order`: a key whose sections all dropped out contributes no
 		# surface, so recording it would put the surface list and the key list out
 		# of step — and _sig_for reads them as parallel.
@@ -6591,6 +6605,10 @@ var n_geom_loaded := 0
 var n_geom_saved := 0
 var t_geom_load := 0
 var t_geom_save := 0
+var _tex_pack: RefCounted = null    # OPT-02, opened by _texpack_open
+var n_texpack_hits := 0
+var n_texpack_saved := 0
+var t_texpack_load := 0
 
 
 func _geom_open() -> void:
@@ -6627,46 +6645,114 @@ func _geom_open() -> void:
 		vsfx = "_vfull"
 	var d := "user://bf6_geom/%s_%s_g%d%s%s" % [level, sig, GEOM_EPOCH,
 		lodsfx, vsfx]
+	_geom_use_dir(d)
+
+
+# ONE PACK PER MAP DIRECTORY (OPT-01), never deleted at launch any more; the
+# HP-015 sweep removes superseded directories, newest per map kept. Loose .res
+# files from the old one-file-per-mesh cache in the same directory are dropped:
+# nothing reads them.
+const GEOM_PACK_VERSION := 1
+var _geom_pack: RefCounted = null
+var _captured: Array = []          # [surface name, arrays] of the mesh being built
+var _capturing := false
+
+
+func _geom_use_dir(d: String) -> void:
+	if _geom_pack != null:
+		_geom_pack.close()
+		_geom_pack = null
+	_geom_dir = ""
 	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
 		return
 	_geom_dir = d
-
-
-# md5 of the key, not the key: a MeshSet name is a long path with slashes in it,
-# and those are directories rather than characters as far as a file name is
-# concerned.
-func _geom_path(kc: String) -> String:
-	return "%s/%s.res" % [_geom_dir, kc.md5_text()]
+	for f in DirAccess.get_files_at(d):
+		if str(f).ends_with(".res"):
+			DirAccess.remove_absolute(d.path_join(f))
+	var pk = Pack.new()
+	var t := Time.get_ticks_msec()
+	var n: int = pk.open(d, d.get_file(), GEOM_PACK_VERSION)
+	_geom_pack = pk
+	_say("geometry pack %s: %d mesh(es) on disk, opened in %d ms%s" % [d.get_file(), n,
+		Time.get_ticks_msec() - t, (", %d damaged segment(s) dropped" % pk.bad_segments)
+			if pk.bad_segments > 0 else ""])
 
 
 func _geom_load(kc: String):
-	if _geom_dir == "" or not geom_cache_read or preload("highpoly_install_cache.gd").bypass:
-		return null
-	var p := _geom_path(kc)
-	if not ResourceLoader.exists(p):
+	if _geom_pack == null or not geom_cache_read or preload("highpoly_install_cache.gd").bypass:
 		return null
 	var t := Time.get_ticks_usec()
-	# CACHE_MODE_IGNORE: this reader keeps its own share table (_mesh_by_sig),
-	# which is keyed on the materials as well as the mesh. Letting Godot's
-	# resource cache hand the same instance to two callers would put a mesh from
-	# one scope into another with no way to tell.
-	var r = ResourceLoader.load(p, "ArrayMesh", ResourceLoader.CACHE_MODE_IGNORE)
+	var bytes: PackedByteArray = _geom_pack.get_bytes(kc)
+	if bytes.is_empty():
+		return null
+	var r: ArrayMesh = Pack.decode_mesh(bytes)
 	t_geom_load += Time.get_ticks_usec() - t
-	if not (r is ArrayMesh) or (r as ArrayMesh).get_surface_count() == 0:
+	if r == null or r.get_surface_count() == 0:
 		return null
 	n_geom_loaded += 1
 	return r
 
 
-func _geom_save(kc: String, keys: Array, am: ArrayMesh) -> void:
-	if _geom_dir == "" or keys.is_empty():
+# `arrays` are the [name, arrays] pairs the assembler captured; without them
+# (an older caller) nothing is written rather than reading the mesh back from
+# the GPU.
+func _geom_save(kc: String, keys: Array, am: ArrayMesh, arrays: Array = []) -> void:
+	if _geom_pack == null or keys.is_empty() or arrays.size() != am.get_surface_count():
 		return
 	var t := Time.get_ticks_usec()
-	var destination := _geom_path(kc)
-	var temporary := destination.trim_suffix(".res") + ".%d.part.res" % OS.get_process_id()
-	if ResourceSaver.save(am, temporary) == OK and DirAccess.rename_absolute(temporary, destination) == OK:
+	if _geom_pack.put(kc, Pack.encode_surfaces(arrays)):
 		n_geom_saved += 1
 	t_geom_save += Time.get_ticks_usec() - t
+
+
+# Finish both packs' open segments so what this build learned is on disk.
+# Called at the end of a build, on release_caches and on a map change. Logs
+# what the packs served and wrote, so a real run shows the hit rates.
+func flush_packs() -> void:
+	var t := Time.get_ticks_msec()
+	if _geom_pack != null:
+		_geom_pack.flush()
+	if _tex_pack != null:
+		_tex_pack.flush()
+	var ms := Time.get_ticks_msec() - t
+	var asks := n_geom_loaded + n_geom_miss
+	if asks > 0 or n_texpack_hits + n_texpack_saved > 0:
+		var line := ("cache packs for %s: geometry %d of %d mesh(es) from the pack (%.0f ms), "
+			% [level, n_geom_loaded, asks, t_geom_load / 1000.0]
+			+ "%d new saved (%.0f ms); textures %d from the pack (%.0f ms), %d decoded from the install, "
+			% [n_geom_saved, t_geom_save / 1000.0, n_texpack_hits, t_texpack_load / 1000.0,
+				int(tex_stats.get("decoded", 0))]
+			+ "%d new saved; flush %d ms" % [n_texpack_saved, ms])
+		_say(line)
+		HighpolyLog.info(line)
+
+
+# What the panel shows for a map: meshes and textures in its newest packs.
+static func pack_info(level_name: String) -> Dictionary:
+	return {"geom": _newest_pack_count("user://bf6_geom", level_name),
+		"tex": _newest_pack_count("user://bf6_tex", level_name)}
+
+
+static func pack_counts_in(path: String) -> int:
+	return Pack.count_in(path)
+
+
+static func _newest_pack_count(root: String, level_name: String) -> int:
+	if level_name.is_empty() or not DirAccess.dir_exists_absolute(root):
+		return 0
+	var best := ""
+	var best_t := -1
+	for d in DirAccess.get_directories_at(root):
+		if not str(d).to_lower().begins_with(level_name.to_lower() + "_"):
+			continue
+		var p := root.path_join(d)
+		var t := 0
+		for f in DirAccess.get_files_at(p):
+			t = maxi(t, int(FileAccess.get_modified_time(p.path_join(f))))
+		if t > best_t:
+			best_t = t
+			best = p
+	return Pack.count_in(best) if best != "" else 0
 
 
 # The merge keys a cached mesh carries, recovered from its surface names.

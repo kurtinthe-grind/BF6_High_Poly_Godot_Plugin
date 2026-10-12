@@ -134,6 +134,12 @@ RULES: dict[str, dict] = {
                    r"\b_ordered_levels\b", r"_remove_tree\(\"user://bf6_geom\"\)",
                    r"bool\(_preparation\.cache_ready\)", r"\bshow_deferred_screen\b"],
     },
+    # OPT-01: the geometry cache is served with the precache on and is not
+    # deleted at launch.
+    "OPT-01": {
+        "absent": [],
+        "forbid": [r"_geom_load\(kc\) if not _precache_active", r"not split and not _precache_active"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -149,6 +155,7 @@ ENABLED: list[str] = [
     "UI-01",
     "UI-02",
     "C-01",
+    "OPT-01",
 ]
 
 
