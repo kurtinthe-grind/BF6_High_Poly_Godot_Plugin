@@ -1102,19 +1102,33 @@ All of it is read from your own Battlefield 6 installation."
 
 	var sweep_btn := Button.new()
 	sweep_btn.text = "Remove outdated caches"
-	sweep_btn.tooltip_text = "Deletes index files that a newer copy has replaced, and temp logs left by sessions that ended badly. The newest copy of every cache is kept; anything removed is rebuilt if it is ever needed again."
+	sweep_btn.tooltip_text = "Deletes cache files and folders that a newer copy has replaced: superseded index files, older geometry and texture packs of each map, temp logs left by sessions that ended badly and job files from interrupted caching. The newest copy of every cache is kept; anything removed is rebuilt if it is ever needed again."
 	sweep_btn.pressed.connect(func():
-		var names := HighpolyCacheSweep.outdated(HighpolyCacheSweep.scan(),
-			int(Time.get_unix_time_from_system()))
-		if names.is_empty():
+		var now := int(Time.get_unix_time_from_system())
+		var names := HighpolyCacheSweep.outdated(HighpolyCacheSweep.scan(), now)
+		var geom_dirs := HighpolyCacheSweep.outdated_dirs(
+			HighpolyCacheSweep.scan_dirs(HighpolyCacheSweep.GEOM_DIR), HighpolyCacheSweep.GEOM_DIR)
+		var tex_dirs := HighpolyCacheSweep.outdated_dirs(
+			HighpolyCacheSweep.scan_dirs(HighpolyCacheSweep.TEX_DIR), HighpolyCacheSweep.TEX_DIR)
+		var jobs_old := HighpolyCacheSweep.stale_jobs(
+			HighpolyCacheSweep.scan(HighpolyCacheSweep.JOBS_DIR + "/")
+				if DirAccess.dir_exists_absolute(HighpolyCacheSweep.JOBS_DIR) else [], now)
+		var listing := PackedStringArray(names)
+		for d in geom_dirs: listing.append("bf6_geom/%s/" % d)
+		for d in tex_dirs: listing.append("bf6_tex/%s/" % d)
+		for j in jobs_old: listing.append("preparation_jobs/%s" % j)
+		if listing.is_empty():
 			lbl.text = "No outdated caches."
 			return
 		var dlg := ConfirmationDialog.new()
-		dlg.dialog_text = "Delete %d outdated cache file(s)?\n\n%s" % [names.size(),
-			"\n".join(Array(names).slice(0, 12)) + ("\n…" if names.size() > 12 else "")]
+		dlg.dialog_text = "Delete %d outdated cache item(s)?\n\n%s" % [listing.size(),
+			"\n".join(Array(listing).slice(0, 12)) + ("\n…" if listing.size() > 12 else "")]
 		dlg.confirmed.connect(func():
 			var freed := HighpolyCacheSweep.remove(names)
-			lbl.text = "Removed %d file(s), %s freed." % [names.size(), _human_size(freed)]
+			freed += HighpolyCacheSweep.remove_dirs(geom_dirs, HighpolyCacheSweep.GEOM_DIR)
+			freed += HighpolyCacheSweep.remove_dirs(tex_dirs, HighpolyCacheSweep.TEX_DIR)
+			freed += HighpolyCacheSweep.remove(jobs_old, HighpolyCacheSweep.JOBS_DIR + "/")
+			lbl.text = "Removed %d item(s), %s freed." % [listing.size(), _human_size(freed)]
 			Log.info(lbl.text)
 			_refresh_storage()
 			dlg.queue_free())

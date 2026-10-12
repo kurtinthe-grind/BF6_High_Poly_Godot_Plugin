@@ -50,4 +50,35 @@ func _init() -> void:
 	check(not out.has("highpoly-session.log"), "the real log kept")
 	check(not out.has("probe_assets.tres"), "unrelated files untouched")
 	check(out.size() == 4, "exactly four files")
+
+	# ---- the pack folders (OPT-01 geometry, OPT-02 textures) ----
+	var geom := [
+		_f("mp_battery_aaaaaaaaaaaaaaaa_g12", 100),
+		_f("mp_battery_bbbbbbbbbbbbbbbb_g12", 300),
+		_f("mp_battery_bbbbbbbbbbbbbbbb_g12_vlow", 50),
+		_f("mp_isolated_cccccccccccccccc_g11", 10),
+		_f("not_a_pack", 1),
+	]
+	var gd: PackedStringArray = cs.outdated_dirs(geom, cs.GEOM_DIR)
+	check(gd.has("mp_battery_aaaaaaaaaaaaaaaa_g12"), "older geometry pack of a map dropped")
+	check(not gd.has("mp_battery_bbbbbbbbbbbbbbbb_g12"), "newest geometry pack kept")
+	check(not gd.has("mp_battery_bbbbbbbbbbbbbbbb_g12_vlow"), "another VRAM mode is its own family")
+	check(not gd.has("mp_isolated_cccccccccccccccc_g11"), "a map's only pack kept")
+	check(not gd.has("not_a_pack") and gd.size() == 1, "only pack folders are touched")
+	var tex := [
+		_f("mp_battery_0123456789abcdef", 10),
+		_f("mp_battery_fedcba9876543210", 20),
+		_f("mp_dumbo_0000000000000000", 5),
+	]
+	var td: PackedStringArray = cs.outdated_dirs(tex, cs.TEX_DIR)
+	check(td.size() == 1 and td.has("mp_battery_0123456789abcdef"), "older texture pack dropped, newest kept")
+
+	# ---- index-worker job files a crash left behind (OPT-19) ----
+	var jobs := [
+		_f("123_456.json", now - 3 * 86400),
+		_f("123_456.status.json", now - 3 * 86400),
+		_f("777_888.json", now - 60),
+	]
+	var jd: PackedStringArray = cs.stale_jobs(jobs, now)
+	check(jd.size() == 2 and not jd.has("777_888.json"), "day-old job files dropped, a live job kept")
 	quit(1 if fails else 0)
