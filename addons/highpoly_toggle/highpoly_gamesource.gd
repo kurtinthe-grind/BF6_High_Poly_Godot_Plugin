@@ -6289,17 +6289,33 @@ func _precache_active() -> bool:
 # separate queue is needed. The budget is a ceiling on bytes, not on entries: a
 # map's meshes differ by three orders of magnitude in size and counting them
 # would let a handful of big ones blow past any sensible limit.
+# EVICTION IN O(1) (OPT-13). It took _pc_kept.keys()[0], which builds the whole
+# key array on every eviction - quadratic once the 256 MB budget is full, and a
+# suspect for the unattributed part of "parse + build ArrayMesh". A FIFO of
+# names with a head index gives the same oldest-first order.
+var _pc_fifo: Array = []
+var _pc_head := 0
+
 func _pc_keep(res_name: String, record: PackedByteArray) -> void:
 	if record.is_empty() or _pc_kept.has(res_name):
 		return
+	if _pc_kept.is_empty():
+		_pc_fifo.clear()               # cleared elsewhere (release, map change)
+		_pc_head = 0
 	_pc_kept[res_name] = record
+	_pc_fifo.append(res_name)
 	_pc_kept_bytes += record.size()
-	while _pc_kept_bytes > PRECACHE_KEEP_BUDGET and not _pc_kept.is_empty():
-		var oldest: String = _pc_kept.keys()[0]
+	while _pc_kept_bytes > PRECACHE_KEEP_BUDGET and _pc_head < _pc_fifo.size():
+		var oldest: String = _pc_fifo[_pc_head]
 		if oldest == res_name:
 			break                      # never evict what was just asked for
-		_pc_kept_bytes -= (_pc_kept[oldest] as PackedByteArray).size()
-		_pc_kept.erase(oldest)
+		_pc_head += 1
+		if _pc_kept.has(oldest):
+			_pc_kept_bytes -= (_pc_kept[oldest] as PackedByteArray).size()
+			_pc_kept.erase(oldest)
+	if _pc_head > 4096 and _pc_head * 2 > _pc_fifo.size():
+		_pc_fifo = _pc_fifo.slice(_pc_head)
+		_pc_head = 0
 
 
 func _precache_fetch(first: String) -> void:
