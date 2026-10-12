@@ -66,6 +66,15 @@ RULES: dict[str, dict] = {
                    r"\b_gm_heal_off\b", r"\b_mine_gamemodes_async\b",
                    r"\b_gamemodes_then_catalogue\b", r"hp_gamemode", r"gamemode_markers"],
     },
+    "F-05b": {
+        "absent": ["highpoly_loadout.gd", "highpoly_loadout_inspector.gd", "highpoly_soldier.gd",
+                   "highpoly_weapon.gd", "highpoly_vehicle.gd"],
+        "forbid": [r"\bHighpolyLoadout\b", r"\bLoadoutScript\b", r"\bLoadoutInspector\b",
+                   r"\b_loadout_inspector\b", r"\bHighpolySoldier\b", r"\bHighpolyWeapon\b",
+                   r"\bHighpolyVehicle\b", r"soldier://", r"weapon://", r"loadout://",
+                   r"vehicle://", r"highpoly\.loadout", r"\bhighpoly_loadout\b",
+                   r"_bf6_open_loadout", r"_bf6_loadout_items", r"_selected_spawners"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -75,6 +84,7 @@ ENABLED: list[str] = [
     "F-01",
     "F-07",
     "F-06",
+    "F-05b",
 ]
 
 

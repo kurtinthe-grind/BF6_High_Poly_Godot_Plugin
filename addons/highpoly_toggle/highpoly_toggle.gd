@@ -14,9 +14,6 @@ extends EditorPlugin
 # keeps only the RID: if the last reference dies, the global points at freed
 # memory and the next terrain-blend material to draw takes the editor down.
 var _ground_white: Texture2D
-# The loot spawner Loadout panel in the Inspector.
-const LoadoutInspector := preload("highpoly_loadout_inspector.gd")
-var _loadout_inspector: EditorInspectorPlugin = null
 # The shared BF6 menu (menu bar, and the Extended Workspace radial when enabled).
 const PluginMenu := preload("bf6_plugin_menu.gd")
 var _menu_bindings: Dictionary = {}
@@ -598,14 +595,6 @@ func _enter_tree() -> void:
 	# Configure before any theme lookup; nested installs must read their own
 	# shipped menu and palette rather than another add-on at the default path.
 	SharedMenu.configure(get_script().resource_path.get_base_dir())
-	# THE LOOT AND SOLDIER SPAWNERS' LOADOUT, in the Inspector
-	# (highpoly_loadout_inspector.gd). The key is the spawner's scene name.
-	_loadout_inspector = LoadoutInspector.new()
-	_loadout_inspector.undo = get_undo_redo()
-	_loadout_inspector.refresh_node = func(node: Node) -> void:
-		if node is Node3D and is_instance_valid(node):
-			HighpolyLib.apply_one(node as Node3D, HighpolyLib.LoadoutScript.type_of(node), _mode(), _textured())
-	add_inspector_plugin(_loadout_inspector)
 	_register_bf6_menu.call_deferred()
 	# The terrain-blend GLOBAL shader parameters, registered before any prop
 	# material can compile against them. Session-only (RenderingServer, not
@@ -2452,10 +2441,6 @@ func _exit_tree() -> void:
 	var bf6_menu := PluginMenu.find()
 	if bf6_menu != null:
 		bf6_menu.unregister_plugin("highpoly")
-		bf6_menu.unregister_plugin("highpoly.loadout")
-	if _loadout_inspector != null:
-		remove_inspector_plugin(_loadout_inspector)
-		_loadout_inspector = null
 	# The clean-exit marker. Its ABSENCE next session is what says the editor
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
@@ -5675,8 +5660,8 @@ func _swap_deferred(node: Node) -> void:
 # assets", order 900) opens this plugin's panel from the radial, as the Unreal
 # pill opens its control panel; in the menu bar it lists the panel's own
 # controls, in the order and under the section titles of menu.json - the file
-# the Unreal panel is built from too. LOADOUT (order 1050) is offered while a
-# spawner is selected and opens its Loadout panel.
+# the Unreal panel is built from too. (The fork removed the LOADOUT entry with
+# the spawner previews, F-05b.)
 
 func _register_bf6_menu() -> void:
 	var bf6_menu := PluginMenu.ensure()
@@ -5684,10 +5669,6 @@ func _register_bf6_menu() -> void:
 		return
 	bf6_menu.register_plugin("highpoly", "High Poly", 900, _bf6_menu_items,
 		func(_ctx): return "the real game assets", {"pick": func(_center): _bf6_show_panel()})
-	bf6_menu.register_plugin("highpoly.loadout", "Loadout", 1050, _bf6_loadout_items,
-		func(_ctx): return "soldiers, loot and vehicles",
-		{"available": func(ctx): return not _selected_spawners(ctx).is_empty(),
-		 "pick": func(_center): _bf6_open_loadout()})
 
 
 func _bf6_show_panel() -> void:
@@ -5700,28 +5681,6 @@ func _bf6_show_panel() -> void:
 	elif win != null and is_instance_valid(win):
 		win.show()
 		win.grab_focus()
-
-
-func _selected_spawners(ctx: Dictionary) -> Array:
-	var out: Array = []
-	for n in ctx.get("selection", []):
-		var type := HighpolyLib.LoadoutScript.type_of(n) if n is Node else ""
-		if type == "LootSpawner" or HighpolyLib.LoadoutScript.is_soldier_type(type):
-			out.append(n)
-	return out
-
-
-func _bf6_open_loadout() -> void:
-	var spawners := _selected_spawners(PluginMenu.find().context("radial") if PluginMenu.find() != null else {})
-	if not spawners.is_empty():
-		EditorInterface.inspect_object(spawners[0])
-
-
-func _bf6_loadout_items(ctx: Dictionary) -> Array:
-	var spawners := _selected_spawners(ctx)
-	return [{"id": "loadout", "label": "Loadout for the selected spawner",
-		"sub": "select a soldier or loot spawner" if spawners.is_empty() else "",
-		"disabled": spawners.is_empty(), "pick": _bf6_open_loadout}]
 
 
 func _bf6_menu_items(_ctx: Dictionary) -> Array:

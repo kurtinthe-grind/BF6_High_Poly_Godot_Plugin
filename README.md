@@ -110,10 +110,8 @@ decoder, with the grid read from EBX rather than assumed. Emitters get the
 spawn rate, size, spread and lifetime the game actually authors, sprite
 emitters get billboards and volume decals get real `Decal` nodes.
 
-**Gameplay markers show what they spawn.** Vehicle spawners render the
-drivable vehicle. Player and AI spawners render a real soldier, correct per
-faction, assembled and dressed from the character bundles. The loot spawner
-renders its weapon, assembled part by part.
+**Gameplay markers keep the SDK proxy.** The fork removed the soldier, weapon,
+loadout and vehicle previews (F-05b); spawners show the SDK's own markers.
 
 **Interaction.** Pick mode clicks the original map objects and Tabs into their
 parts. High-poly objects can be selected and grabbed like anything else, with
@@ -165,10 +163,8 @@ High-poly mode covers more than static props:
 - **Interactable doors swing.** Left **double-click** a door (DoorRural,
   BorderFenceDoor, ChickenWire, interior doors…) to animate it open/closed on
   its real hinge — check a doorway's clearance without leaving the editor.
-- **Gameplay spawners show what they spawn.** Vehicle spawners render the
-  actual drivable vehicle (wheels, tracks, mounted guns, livery), SpawnPoint /
-  AI Spawner show a real soldier, and the Loot Spawner shows its weapon —
-  instead of anonymous placeholder boxes.
+- **Gameplay spawners keep the SDK proxy.** The fork removed the soldier,
+  weapon, loadout and vehicle previews (F-05b).
 
 ### Collision
 See what the game will actually collide with:
