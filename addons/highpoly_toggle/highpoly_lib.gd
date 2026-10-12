@@ -540,6 +540,15 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 	_set_proxy_visible(node, false)
 	return true
 
+# WHAT AN OVERLAY WAS LAST DRESSED WITH. Everything _set_textured decides comes
+# from these three values, so an overlay already dressed under the same three
+# needs nothing - and skipping it is what makes a repeat swap pass (after a
+# save, a mode flip, a selection override) cost a lookup per prop instead of a
+# walk of every mesh in every overlay.
+static func dress_key(textured: bool) -> String:
+	return "%s|%s|%s" % [textured, HighpolyLighting.cast_shadows,
+		HighpolyLighting.shadow_min_size]
+
 static func _set_textured(hp: Node, textured: bool) -> void:
 	# Overlays follow the dock's Shadows sub-checkbox, exactly as map-context
 	# props already do (highpoly_mapcontext, _build_mmi).
@@ -562,6 +571,9 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 	#
 	# The distance half is HighpolyLighting.shadow_radius, which Godot enforces by
 	# culling casters outside the shadow range at no cost to us.
+	var key := dress_key(textured)
+	if str(hp.get_meta("hp_dress", "")) == key:
+		return
 	var shadow: int = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	if HighpolyLighting.cast_shadows:
 		var ab := _merged_aabb(hp, "")
@@ -583,6 +595,7 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 			(n as GeometryInstance3D).layers = TEXTURED_LAYER
 		for c in n.get_children():
 			stack.append(c)
+	hp.set_meta("hp_dress", key)
 
 # A PROXY THAT CANNOT BE SEEN BUT CAN STILL BE CLICKED.
 #
