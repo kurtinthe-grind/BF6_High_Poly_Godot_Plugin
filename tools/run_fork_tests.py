@@ -5,6 +5,9 @@
 2. every tools/forktests/test_*.gd, each in its own headless `--script` run
    inside a throwaway project holding a copy of the addon (as gate_sandbox.py)
 3. tools/gate_sandbox.py - every script and shader loads as a set
+4. tools/editor_smoke.py - the real editor, headless, with the plugin enabled
+   in a sandbox project: no script error at enable, the panel comes up, and
+   no cache run or worker process starts (skip with --no-editor)
 
 A GDScript test prints "FORKTEST PASS <what>" / "FORKTEST FAIL <what>" and
 quits non-zero on failure.
@@ -80,6 +83,7 @@ def main() -> int:
     ap.add_argument("only", nargs="?", default="")
     ap.add_argument("--godot", default="")
     ap.add_argument("--no-gate", action="store_true")
+    ap.add_argument("--no-editor", action="store_true")
     ap.add_argument("--timeout", type=float, default=900.0)
     a = ap.parse_args()
     godot = a.godot or gate_sandbox.find_godot()
@@ -89,6 +93,10 @@ def main() -> int:
     bad += run_gd_tests(godot, a.only, a.timeout)
     if not a.no_gate:
         if subprocess.run([sys.executable, str(HERE / "gate_sandbox.py"),
+                           "--godot", godot]).returncode:
+            bad += 1
+    if not a.no_gate and not a.no_editor:
+        if subprocess.run([sys.executable, str(HERE / "editor_smoke.py"),
                            "--godot", godot]).returncode:
             bad += 1
     print("\nFORK TESTS " + ("PASSED" if bad == 0 else f"FAILED ({bad})"))

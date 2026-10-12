@@ -90,7 +90,10 @@ func _enter_tree() -> void:
 	# Runtime discovery only; never write service membership into a map scene.
 	add_to_group(SERVICE_GROUP, false)
 
-func _ready() -> void:
+# The controls are built at construction, not in _ready: the plugin wires them
+# (the auto-cache chip's saved state, its toggled signal) while its panel is
+# still outside the tree, before _ready has run.
+func _init() -> void:
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status.max_lines_visible = 3
@@ -118,6 +121,9 @@ func _ready() -> void:
 	auto_chk.text = "Auto-cache"
 	auto_chk.tooltip_text = "Cache the open map automatically when you switch it to High-Poly or turn on a map layer, if it is not cached yet. Off by default."
 	_row.add_child(auto_chk)
+
+
+func _ready() -> void:
 	_record = Cache.read_record(record_path)
 	if int(_record.get("format", 0)) != FORMAT:
 		_record = {"format": FORMAT}
