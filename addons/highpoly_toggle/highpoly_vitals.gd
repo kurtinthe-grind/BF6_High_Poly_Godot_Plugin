@@ -190,6 +190,19 @@ static func crumb_age_ms() -> int:
 	return Time.get_ticks_msec() - at if at > 0 else 0
 
 
+# ONE PLACED OBJECT THAT HOLDS THE MAIN THREAD FOR A SECOND OR MORE. The swap
+# job checks its time budget only between objects, so a single slow build is
+# a freeze nothing can interrupt; the name is what tells you which asset.
+const SLOW_ITEM_MS := 1000
+
+static func report_slow(what: String, ms: int) -> bool:
+	if ms < SLOW_ITEM_MS:
+		return false
+	HighpolyLog.warn("placed object %s took %s to swap in, on the main thread"
+		% [what, HighpolyLog.human_ms(ms)])
+	return true
+
+
 # A "still going" line from INSIDE a long main-thread loop.
 #
 # The heartbeat cannot report a main-thread stall while it is happening - the

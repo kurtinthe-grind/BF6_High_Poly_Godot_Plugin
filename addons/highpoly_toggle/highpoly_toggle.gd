@@ -2649,6 +2649,8 @@ func _apply_changes() -> void:
 	# A swap pass parked between slices would wake up against a stocked scene
 	# and start re-dressing it. Retire it now; it is restarted after the save.
 	_stocked_resume = _swap_busy
+	if _swap_busy:
+		HighpolyVitals.crumb("idle, nothing building")   # its pass will not say so
 	_swap_gen += 1
 	_swap_busy = false
 	PlacedCull.release(r)              # visibility_range_* back to what it was
@@ -5156,6 +5158,7 @@ func _apply_scene() -> void:
 	_swap_gen += 1
 	var gen := _swap_gen
 	_swap_busy = true
+	HighpolyVitals.crumb("swapping placed objects")
 	# WHO IS SWAPPING, AND IS ANYONE ELSE. Two passes over the same scene
 	# nodes, interleaved across their yields, would both be freeing and
 	# re-adding the same children - and the four layers that crash all die
@@ -5181,8 +5184,10 @@ func _apply_scene() -> void:
 		# scene is live in between.
 		if not is_instance_valid(pair[0]):
 			continue
+		var t_item := Time.get_ticks_msec()
 		if HighpolyLib.apply_one(pair[0] as Node3D, str(pair[1]), tier, tex):
 			n += 1
+		HighpolyVitals.report_slow(str(pair[1]), Time.get_ticks_msec() - t_item)
 		if tree == null or Time.get_ticks_msec() - slice_t0 < budget:
 			continue
 		lane.call(i + 1, total)
@@ -5192,6 +5197,7 @@ func _apply_scene() -> void:
 		if gen != _swap_gen or EditorInterface.get_edited_scene_root() != r:
 			lane.call(total, total)        # close the bar, leave the rest to the newer pass
 			if gen == _swap_gen:
+				HighpolyVitals.crumb("idle, nothing building")
 				_swap_busy = false
 			if OS.get_environment("BF6_MESH_TRACE") == "1":
 				_swap_live -= 1
@@ -5202,6 +5208,7 @@ func _apply_scene() -> void:
 		budget = clampi((Time.get_ticks_msec() - y0) * 4, 250, 2000)
 		slice_t0 = Time.get_ticks_msec()
 	lane.call(total, total)
+	HighpolyVitals.crumb("idle, nothing building")
 	_swap_busy = false
 	if OS.get_environment("BF6_MESH_TRACE") == "1":
 		_swap_live -= 1
