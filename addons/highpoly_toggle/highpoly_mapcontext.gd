@@ -2033,9 +2033,8 @@ func _active_variant_layers(mode: String) -> Dictionary:
 	# the placements came out of, so the honest reading of "winter_event" or
 	# "rush" is: show the normal dressing AND that layer.
 	#
-	# Additive, which is what highpoly_gamemode.gd's own header says these are:
-	# "modes share all scenery in BF6 - these are ADDITIVE gameplay markers, not
-	# prop swaps".
+	# Additive: modes share all scenery in BF6, so a mode's layer adds to the
+	# normal dressing rather than swapping props.
 	if mode != "" and mode != "Off":
 		act[mode] = true
 	return act

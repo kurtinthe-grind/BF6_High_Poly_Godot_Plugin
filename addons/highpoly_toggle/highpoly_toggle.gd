@@ -142,21 +142,8 @@ var mapctx_photo_row: HBoxContainer  # "Ground photo" slider row (always shown)
 var mapctx_photo: HSlider            # colour-map strength on the extended ground, 0-100%
 var mapctx_photo_val: Label
 var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
-var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
+var mapctx_variant_row: HBoxContainer  # "Variant" map-layer dropdown (visible with objects)
 var mapctx_variant: OptionButton
-# The selected mode's DATA KEY, resolved once when the selection changes.
-# The per-tick heal below needs it, and resolving it there would re-parse the
-# mined JSON several times a second for a value that only changes on a click.
-var _gm_key := ""
-# How long the gamemode mine is allowed before it is treated as dead. Measured
-# at 3.4 s on MP_Aftermath with the level mounted; 90 s is far enough above that
-# to survive a slow drive and still short enough that nobody waits out a
-# session for a worker that died on its first line.
-const MINE_TIMEOUT_MS := 90000
-# Set when a heal ran and still produced no node - the dropdown is showing a
-# layer name with no mined mode behind it, so retrying every tick would just
-# rebuild nothing forever. Cleared whenever the selection or the map changes.
-var _gm_heal_off := ""
 var mapctx_timer: Timer
 
 # ---------------------------------------------------------------------------
@@ -580,12 +567,9 @@ func _shed_map_context() -> int:
 			shed += 1
 	if mapctx_variant != null: mapctx_variant.select(0)
 	if mapctx_variant_row != null: mapctx_variant_row.visible = false
-	_gm_key = ""
-	_gm_heal_off = ""
 	_lighting_subs_enabled(false)   # the lighting sub-toggles go unavailable
 	if r != null:
 		HighpolyFx.clear(r)
-		HighpolyGamemode.clear(r)
 		LightingScript.clear(r)
 		mapctx.apply(r, false, false, MODE_SDK)
 		# and hand the SDK its own stand-ins back — the layers that were on had
@@ -1060,10 +1044,9 @@ All of it is read from your own Battlefield 6 installation."
 	# grouping it with them is how people look for it.
 	mc_chips.add_child(mapctx_objects)
 
-	# "Map variant": draw one gamemode's real gameplay layout (capture rings,
-	# objectives, spawn clusters, zones + that mode's own gated props) — data
-	# mined from the level's per-mode gameplay layers. Shown while "Original
-	# map objects" is on and the map has gamemode data.
+	# "Map variant": show one of the map's own object layers (see
+	# _select_variant). Shown while "Original map objects" is on and the map
+	# has layers to choose from.
 	mapctx_variant_row = HBoxContainer.new()
 	mapctx_variant_row.visible = false
 	var mv_lbl := Label.new(); mv_lbl.text = "  Variant"
@@ -1071,20 +1054,10 @@ All of it is read from your own Battlefield 6 installation."
 	mapctx_variant = OptionButton.new()
 	mapctx_variant.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mapctx_variant.add_item("Off")
-	mapctx_variant.tooltip_text = "Rebuilds one game mode out of real Portal objects - capture points, spawns, combat areas and their volumes - under a node named for the mode. Switching modes hides the last one rather than deleting it, so anything you edited is still there when you switch back."
+	mapctx_variant.tooltip_text = "Shows one of the map's own object layers, such as the carriers on Tsuru Reef or a mode's props. Preview only: it adds nothing to your scene."
 	mapctx_variant.item_selected.connect(func(_i):
 		if _locked(mapctx_variant): return
-		var _r := EditorInterface.get_edited_scene_root()
-		var _map: String = mapctx.map_of(_r)
-		# the dropdown shows the name people use; everything below runs on the
-		# data key, because the layer gating matches its string literally
-		var _mode := HighpolyGamemode.key_for(_map, _r,
-			mapctx_variant.get_item_text(mapctx_variant.selected))
-		_gm_key = _mode
-		_gm_heal_off = ""
-		lbl.text = HighpolyGamemode.apply(_r, _map, _mode, mapctx) \
-				+ " | " + mapctx.set_variant_layers(_mode)
-		_save_mapctx_state())
+		_select_variant(mapctx_variant.get_item_text(mapctx_variant.selected)))
 	mapctx_variant_row.add_child(mapctx_variant)
 	host.add_child(mapctx_variant_row)
 
@@ -2081,30 +2054,6 @@ All of it is read from your own Battlefield 6 installation."
 			HighpolyProfiler.span("panel tick: prop cell culling",
 				Time.get_ticks_msec() - _t_ctx)
 			HighpolyProfile.end("prop cell culling")
-		# THE MODE REBUILDS ITSELF IF YOU DELETE IT. Selecting a mode leaves a
-		# node in the scene; deleting that node is a normal thing to do and
-		# should not leave the dropdown claiming a mode is shown. So: if a mode
-		# is selected and no node in the tree remembers it, build it again.
-		#
-		# The test is the node's OWN marker, not a fixed name. It used to look
-		# for a node called "_GAMEMODE", which no longer exists at all under the
-		# per-mode nodes this builds - so that test would have been true on
-		# every tick and re-applied the mode several times a second.
-		if mapctx_variant != null and mapctx_variant.selected > 0 \
-				and mapctx_variant_row != null and mapctx_variant_row.visible:
-			HighpolyProfile.begin("gamemode marker heal")
-			var _gr := EditorInterface.get_edited_scene_root()
-			if _gr != null and _gm_key != "" and _gm_heal_off != _gm_key \
-					and not HighpolyGamemode.built(_gr).has(_gm_key):
-				var _gmap: String = mapctx.map_of(_gr)
-				lbl.text = HighpolyGamemode.apply(_gr, _gmap, _gm_key, mapctx)
-				mapctx.set_variant_layers(_gm_key)
-				# Still nothing? Then the dropdown is showing one of the map's
-				# own layer names, which gates props but has no mined objects to
-				# build. Stop, or this retries forever at tick rate.
-				if not HighpolyGamemode.built(_gr).has(_gm_key):
-					_gm_heal_off = _gm_key
-			HighpolyProfile.end("gamemode marker heal")
 		# map-lights culling: only lights near the editor camera render
 		var _vp3 := EditorInterface.get_editor_viewport_3d(0)
 		var _cam3 := _vp3.get_camera_3d() if _vp3 else null
@@ -2494,7 +2443,7 @@ func _settings_snapshot() -> PackedStringArray:
 			else ("MAXIMUM, no distance culling" if r >= int(mapctx_range.max_value)
 			else "%d m" % r)])
 	if mapctx_variant != null and mapctx_variant.selected > 0:
-		out.append("%-22s %s" % ["gamemode variant",
+		out.append("%-22s %s" % ["variant layer",
 			mapctx_variant.get_item_text(mapctx_variant.selected)])
 	return out
 
@@ -3812,8 +3761,6 @@ func _do_reset() -> void:
 	MapContextScript.show_fx_cards = false
 	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
-	_gm_key = ""
-	_gm_heal_off = ""
 	if ovr_chk: ovr_chk.text = _override_label()
 	_override.clear()
 	# forget the per-map saved state too, or reopening a map restores toggles
@@ -3868,7 +3815,6 @@ func _check_scene_change() -> void:
 	if old != null and is_instance_valid(old):
 		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
 		LightingScript.clear(old)                           # frees _GAME_LIGHTING + _MAP_LIGHTS
-		HighpolyGamemode.clear(old)                         # frees _GAMEMODE markers
 		HighpolyFx.clear(old)                               # frees _MAP_FX particles
 		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
@@ -3894,8 +3840,6 @@ func _check_scene_change() -> void:
 		MapContextScript.show_fx_cards = false   # keep the card layer in step
 	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
-	_gm_key = ""
-	_gm_heal_off = ""
 	if col_chk: col_chk.set_pressed_no_signal(false)
 	if iso_chk:
 		iso_chk.set_pressed_no_signal(false)
@@ -4432,51 +4376,36 @@ func _open_shader_dialog() -> void:
 	dlg.canceled.connect(func(): dlg.queue_free())
 	EditorInterface.popup_dialog_centered(dlg)
 
-# populate/show the gamemode Variant dropdown while objects are on (only for
-# maps that have gamemode_markers.json); hiding it clears the overlay
+# The Variant dropdown shows a layer of the map's own objects (the carriers on
+# Tsuru Reef, a mode's props). It never adds gameplay nodes: the fork removed
+# the game-mode builder, which put capture points, HQs and spawns into the
+# user's scene and rebuilt them when deleted.
+func _select_variant(layer: String) -> void:
+	if mapctx == null:
+		return
+	lbl.text = mapctx.set_variant_layers("" if layer == "Off" else layer)
+	_save_mapctx_state()
+
+# populate/show the Variant dropdown while objects are on: it lists the map's
+# own object layers, discovered from the subworlds the placements came out of
+# (winter_event, rush, domination, the Tsuru Reef carriers, ...)
 func _variant_row_update(objects_on: bool) -> void:
 	if mapctx_variant_row == null: return
-	var r := EditorInterface.get_edited_scene_root()
-	# THE MAP'S OWN LAYERS, when there is no mined mode file.
-	#
-	# This asked HighpolyGamemode.modes(), which reads gamemode_markers.json -
-	# written by a miner that no longer exists. The list came back empty on
-	# every map, so `show` was always false and the whole row was HIDDEN. Not
-	# greyed out, not empty: absent. Which is why the game mode could not be
-	# selected at all.
-	#
-	# The layers are discovered from the subworlds the placements came out of,
-	# so the map can list its own: winter_event, rush, domination, sabotage and
-	# the rest. When the marker file does come back it wins, because it also
-	# carries the spawns and objectives this cannot.
-	var mds: Array = HighpolyGamemode.modes(mapctx.map_of(r)) if objects_on else []
-	var mined := not mds.is_empty()
-	if objects_on and mds.is_empty():
-		mds = mapctx.available_layers()
-	var show := objects_on and not mds.is_empty()
+	var mds: Array = mapctx.available_layers() if objects_on else []
+	var show := not mds.is_empty()
 	mapctx_variant_row.visible = show
 	if not show:
-		HighpolyGamemode.clear(r)
 		return
 	var cur := mapctx_variant.get_item_text(mapctx_variant.selected) \
 			if mapctx_variant.selected >= 0 else "Off"
 	mapctx_variant.clear()
 	mapctx_variant.add_item("Off")
 	for m in mds:
-		# mined modes get the name people use ("Team Deathmatch"); the layer-name
-		# fallback is left alone, because those ARE the layer's own spelling and
-		# set_variant_layers matches on it
-		mapctx_variant.add_item(HighpolyGamemode.pretty(str(m)) if mined else str(m))
+		mapctx_variant.add_item(str(m))
 	for i in range(mapctx_variant.item_count):
 		if mapctx_variant.get_item_text(i) == cur:
 			mapctx_variant.select(i)
 			break
-	# the row was just repopulated, so the cached key and the "cannot build"
-	# latch both belong to the previous map's list
-	_gm_key = HighpolyGamemode.key_for(mapctx.map_of(r), r,
-		mapctx_variant.get_item_text(mapctx_variant.selected)) \
-		if mapctx_variant.selected > 0 else ""
-	_gm_heal_off = ""
 
 # remember the overlay setup per map so a plugin/editor restart brings it
 # back automatically (see _restore_mapctx_state) instead of the user
@@ -4540,7 +4469,6 @@ func _restore_mapctx_state() -> void:
 		# plugin reloads orphan our owner=null overlay nodes ("FX won't
 		# despawn") — sweep them all before restoring the saved state
 		HighpolyFx.clear(r)
-		HighpolyGamemode.clear(r)
 		LightingScript.clear(r)
 	var map: String = mapctx.map_of(r)
 	if map == "": return
@@ -4672,15 +4600,14 @@ func _restore_mapctx_state() -> void:
 			if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fv)
 			LightingScript.interior_fill = clampf(fv / 100.0, 0.0, 1.0)
 		_lighting_changed()
-	# gamemode variant overlay (dropdown lives under "Original map objects")
+	# variant layers (dropdown lives under "Original map objects")
 	_variant_row_update(bool(d.get("objects", false)))
 	var _sv := str(d.get("variant", "Off"))
 	if _sv != "Off" and mapctx_variant_row != null and mapctx_variant_row.visible:
 		for i in range(mapctx_variant.item_count):
 			if mapctx_variant.get_item_text(i) == _sv:
 				mapctx_variant.select(i)
-				lbl.text = HighpolyGamemode.apply(r, map, _sv, mapctx)
-				mapctx.set_variant_layers(_sv)
+				_select_variant(_sv)
 				break
 	# the Ground photo strength, BEFORE the apply below builds the terrain
 	# material, so the build binds the saved value rather than the default
@@ -4898,86 +4825,8 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# what made a first open take three and a half minutes before anything could
 	# be drawn. Added on a worker instead, additively, so the map is on screen
 	# and being worked on while it lands.
-	# MINE FIRST, THEN THE CATALOGUE, one after the other rather than both at
-	# once. These were started back to back and neither was awaited, so both ran
-	# on workers at the same time - and the catalogue sweep INSERTS into
-	# gs.src.ebx while the mine iterates it. Growing a Dictionary under another
-	# thread's iterator is not something to leave to luck, and when the mine died
-	# of it there was nothing to see: the failure is silent (see below).
-	#
-	# The mine takes about 3 s and only needs this level's partitions, which the
-	# level mount already has; the catalogue is 85 s cold and is for OTHER
-	# levels' objects. Running the short one first costs the long one nothing.
-	_gamemodes_then_catalogue(gs, map)
-	return true
-
-
-func _gamemodes_then_catalogue(gs, map: String) -> void:
-	await _mine_gamemodes_async(gs, map)
 	_upgrade_catalogue_async(gs)
-
-
-# THE MODE MARKERS, mined from the install on a worker.
-#
-# highpoly_gamemode.gd has always been able to draw capture zones, objectives
-# and spawns; it needed gamemode_markers.json, from a miner that no longer
-# exists. HighpolyGmMine rebuilds that file from the game. 7 s on MP_Aftermath,
-# so it goes on a worker rather than in front of the map.
-#
-# Only when there is nothing usable on disk: the file is derived from the
-# install and does not go stale between sessions, so re-mining on every open
-# would spend those seconds for nothing.
-#
-# "Usable" is not the same as "present". The first version of this file held an
-# origin per marker and nothing else, which is all the orb overlay needed;
-# rebuilding real Portal objects needs polygons, extents and facings, so an old
-# file has to be re-mined rather than read. Testing only for existence would
-# leave anyone who ran the previous version with a file that can never build
-# anything and no way to notice.
-func _mine_gamemodes_async(gs, map: String) -> void:
-	if gs == null or map == "":
-		return
-	if HighpolyGamemode.usable(map):
-		return
-	# The one read that has to touch gs.src.ebx, taken here on the main thread
-	# so the worker never iterates a Dictionary anything else might grow.
-	var roots: Array = HighpolyGmMine.roots_of(gs, str(gs.level))
-	if roots.is_empty():
-		HighpolyLog.warn("gamemode markers: %s has no _layers_gameplay partitions "
-			% map + "in the mount, so there are no modes to mine")
-		return
-	var done := [false]
-	var n := [0]
-	var tid := WorkerThreadPool.add_task(func() -> void:
-		n[0] = HighpolyGmMine.mine_to_disk(gs, str(gs.level), map, roots)
-		done[0] = true, true, "bf6 gamemode markers")
-	# A FAILED WORKER USED TO HANG HERE FOREVER, SILENTLY.
-	#
-	# done[0] is set by the last line of the task, so a GDScript error anywhere
-	# inside it leaves the flag false and this loop awaiting frames for the rest
-	# of the session: no file, no dropdown, no warning, nothing in the log to
-	# say the mine had even been attempted. That is what "users are not getting
-	# gamemode data" looked like. Bounded now, and it says so.
-	var t0 := Time.get_ticks_msec()
-	while not done[0]:
-		if get_tree() == null:
-			return
-		if Time.get_ticks_msec() - t0 > MINE_TIMEOUT_MS:
-			HighpolyLog.warn(("gamemode markers: the miner did not finish within "
-				+ "%d s and has been given up on. No modes will be offered for %s. "
-				+ "This means the worker stopped early - the Output panel will "
-				+ "carry the script error.") % [MINE_TIMEOUT_MS / 1000, map])
-			return
-		await get_tree().process_frame
-	WorkerThreadPool.wait_for_task_completion(tid)
-	if n[0] > 0:
-		# The dropdown lists what this just produced, so it has to be asked
-		# again - the same timing mistake that kept the row hidden before.
-		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
-	else:
-		HighpolyLog.warn("gamemode markers: nothing mined for %s from %d gameplay "
-			% [map, roots.size()] + "partition(s), so the Variant list stays empty")
-	return
+	return true
 
 
 # Runs the catalogue sweep off the main thread and refreshes what depends on it.
@@ -5783,12 +5632,6 @@ func _on_node_added_body(node: Node) -> void:
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null or not root.is_ancestor_of(node): return
 	if HighpolyLib.in_overlay(node): return
-	# A REBUILT MODE IS NOT SOMETHING YOU JUST PLACED. Its nodes are owned (they
-	# are yours to keep and edit), so in_overlay above does not cover them, and
-	# they all sit under res://objects/ - which is exactly what the collision
-	# branch below tests. A few hundred capture points and spawns arriving at
-	# once would each get a collision overlay built for them.
-	if HighpolyGamemode.in_gamemode(node): return
 	# collision overlay for pieces placed while "Show collisions" is on
 	if col_chk != null and col_chk.button_pressed \
 			and String(node.scene_file_path).begins_with("res://objects/"):

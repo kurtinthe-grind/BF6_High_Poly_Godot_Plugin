@@ -60,6 +60,12 @@ RULES: dict[str, dict] = {
                    r"\bwater_sim\b", r"\b_water_look\b", r"\bWATER_STATE_KEY\b",
                    r"func water\(", r"\"water_lab\"", r"\"water\"\s*:", r"base_ripple"],
     },
+    "F-06": {
+        "absent": ["highpoly_gamemode.gd", "highpoly_gmmine.gd"],
+        "forbid": [r"\bHighpolyGamemode\b", r"\bHighpolyGmMine\b", r"\b_gm_key\b",
+                   r"\b_gm_heal_off\b", r"\b_mine_gamemodes_async\b",
+                   r"\b_gamemodes_then_catalogue\b", r"hp_gamemode", r"gamemode_markers"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -68,6 +74,7 @@ ENABLED: list[str] = [
     "F-04",
     "F-01",
     "F-07",
+    "F-06",
 ]
 
 

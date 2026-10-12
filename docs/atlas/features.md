@@ -24,9 +24,13 @@ No preload-blocker; preloaded (toggle:66; variants:20 reuses `_ray_hits_local_aa
 Known-unresolved (in comments): half-vs-full extent :796; per-effect sheets are a majority vote per graph :285; `EMITTER_BBOX` deliberately not wired :760; sheet-less non-billboard families not drawn.
 
 ## highpoly_gamemode.gd (495)
+> Removed in the fork (F-06): the Variant dropdown only switches map layers.
+
 `class_name HighpolyGamemode`. Rebuilds a gamemode as REAL owned Portal objects (7 scene kinds :48); labels owner=null, gameplay objects owner=root (:12-23). `data_path/modes/usable/pretty` :83-:112, `key_for` :123, `built` :148, `in_gamemode` :165, `clear` :176, `apply(root, map, mode, _unused)` :187. `SCHEMA 2` must match gmmine.
 
 ## highpoly_gmmine.gd (513)
+> Removed in the fork (F-06).
+
 `class_name HighpolyGmMine`. Mines `_layers_gameplay/<mode>` subworlds → `gamemode_markers.json`. `roots_of` :124 (main thread, snapshots ebx), `mine` :150 (**builds its OWN BF6Walk :175-181 — mining on the shared walker poured placements into the map from a worker**), `mine_to_disk` :467. `CAPTURE_MAX_AREA 1500.0` heuristic :108.
 
 ## highpoly_hlod.gd (617) — OFF
