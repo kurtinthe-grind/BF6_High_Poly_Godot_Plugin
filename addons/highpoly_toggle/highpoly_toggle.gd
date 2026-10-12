@@ -2964,9 +2964,16 @@ func _add_dock() -> void:
 func _focus_dock() -> void:
 	if dock_root == null or not is_instance_valid(dock_root):
 		return
-	var tabs := dock_root.get_parent() as TabContainer
+	# Walk up to the slot's TabContainer: from 4.6 the editor wraps a control
+	# added with add_control_to_dock in its own EditorDock, so the direct parent
+	# is not the tab container any more.
+	var tab: Node = dock_root
+	var tabs: Node = tab.get_parent()
+	while tabs != null and not (tabs is TabContainer):
+		tab = tabs
+		tabs = tabs.get_parent()
 	if tabs != null:
-		tabs.current_tab = dock_root.get_index()
+		(tabs as TabContainer).current_tab = tab.get_index()
 	_tips_hide()
 
 
