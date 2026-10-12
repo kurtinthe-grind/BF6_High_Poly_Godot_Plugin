@@ -609,9 +609,7 @@ func _enter_tree() -> void:
 	# ---- the one download bar ----
 	# One bar, not a stack: only one transfer runs at a time now, so a stack
 	# could only ever show one moving row and several idle ones.
-	jobs = _take_service("jobs")
-	if jobs == null:
-		jobs = JobsScript.new()
+	jobs = JobsScript.new()
 	jobs.name = "HighpolyJobQueue"
 	dock.add_child(jobs)
 	job_row = VBoxContainer.new()
@@ -1730,17 +1728,10 @@ All of it is read from your own Battlefield 6 installation."
 	# again whenever it is opened.
 	_refresh_storage_if_open.call_deferred()
 
-	# Adopted across a soft reopen when there is one to adopt, so the open game
-	# source, the built cell index and the rendered icons all survive a change to
-	# this panel. See _keep_service.
-	profiler = _take_service("profiler")
-	if profiler == null:
-		profiler = ProfilerScript.new()
+	profiler = ProfilerScript.new()
 	profiler.name = "HighpolyProfiler"
 	dock.add_child(profiler)
-	mapctx = _take_service("mapctx")
-	if mapctx == null:
-		mapctx = MapContextScript.new()
+	mapctx = MapContextScript.new()
 	dock.add_child(mapctx)
 	# the background props builder reports through the dock: live text in the
 	# status label + a real progress bar (meshes built / total)
@@ -1971,17 +1962,6 @@ All of it is read from your own Battlefield 6 installation."
 	# edited/selected
 	set_input_event_forwarding_always_enabled()
 
-	# THE SNAPSHOT GOES ON NOW, not deferred, and the order is the point.
-	# _enter_tree leaves the dropdown on Low-Poly by design (every session starts
-	# safe), and _startup applies whatever the dropdown says to every placed prop.
-	# Correcting the dropdown one frame later would mean the scene is stripped
-	# back to SDK proxies first and put back afterwards - visibly, and for nothing.
-	if _kept.has("ui"):
-		var _ui: Dictionary = _kept["ui"]
-		_kept.erase("ui")
-		_soft_restore = false
-		_soft_applied = true
-		_apply_ui(_ui)
 	_startup.call_deferred()
 
 
@@ -2284,18 +2264,6 @@ func _exit_tree() -> void:
 	var esel := EditorInterface.get_selection()
 	if esel.selection_changed.is_connected(_on_selection_changed):
 		esel.selection_changed.disconnect(_on_selection_changed)
-	# A SOFT REOPEN IS NOT A SHUTDOWN. The same plugin is coming straight back,
-	# so nothing below needs undoing, and undoing it is exactly what made a layout
-	# change cost a full rebuild. Hand the long-lived services across and stop.
-	if _soft_reopen:
-		_soft_reopen = false     # one reopen, not every disable from here on
-		_kept["ui"] = _capture_ui()
-		_keep_service("mapctx", mapctx)
-		_keep_service("profiler", profiler)
-		_keep_service("jobs", jobs)
-		Log.hook(Callable())     # never call into a freed panel
-		_remove_dock(false)
-		return
 	# Their ground decal is a saved node we only ever HID; a plugin that is being
 	# switched off must not leave a piece of the user's scene invisible.
 	if mapctx != null:
@@ -2506,157 +2474,6 @@ func _swap_placed_after_build() -> void:
 		return
 	await _apply_scene()
 	_reapply_placed_cull()
-
-
-# THE PANEL COMES BACK THE WAY IT WAS, which is a separate question from the
-# scene coming back.
-#
-# The scene survives a soft reopen because nothing tears it down. The CONTROLS do
-# not: they are built fresh, so they come up on their shipped defaults - Low-Poly,
-# every chip off - while the scene still has the scenery on and the props swapped.
-# The panel then disagrees with the level it is describing, and the first toggle
-# you touch acts on the panel's idea rather than the scene's.
-#
-# Reading the saved per-map state back is the wrong repair: that is what was on
-# disk, and what matters is what was on SCREEN a moment ago, which may be neither
-# saved nor savable yet. So the live values are carried across with the services.
-#
-# Applied with no signals: every one of these already describes something the
-# scene is doing, so firing the handlers would rebuild what is already built.
-func _capture_ui() -> Dictionary:
-	var chips := {}
-	for e in _ui_chips():
-		var c: Button = e[1]
-		if c != null and is_instance_valid(c):
-			chips[str(e[0])] = c.button_pressed
-	return {
-		"chips": chips,
-		"mode": mode_btn.get_selected_id() if mode_btn != null else -1,
-		"range": mapctx_range.value if mapctx_range != null else -1.0,
-		"photo": mapctx_photo.value if mapctx_photo != null else -1.0,
-		"variant": mapctx_variant.selected if mapctx_variant != null else -1,
-		"scroll": dock_scroll.scroll_vertical if dock_scroll != null else 0,
-	}
-
-
-func _apply_ui(d: Dictionary) -> void:
-	var chips: Dictionary = d.get("chips", {})
-	for e in _ui_chips():
-		var c: Button = e[1]
-		if c != null and is_instance_valid(c) and chips.has(str(e[0])):
-			c.set_pressed_no_signal(bool(chips[str(e[0])]))
-	var m := int(d.get("mode", -1))
-	if mode_btn != null and m >= 0:
-		mode_btn.select(mode_btn.get_item_index(m))
-	var rg := float(d.get("range", -1.0))
-	if mapctx_range != null and rg >= 0.0:
-		mapctx_range.set_value_no_signal(rg)
-		if mapctx_range_val: mapctx_range_val.text = _range_label(rg)
-	var pv := float(d.get("photo", -1.0))
-	if mapctx_photo != null and pv >= 0.0:
-		mapctx_photo.set_value_no_signal(pv)
-		if mapctx_photo_val: mapctx_photo_val.text = "%d%%" % int(pv)
-		MapContextScript.colormap_strength = clampf(pv / 100.0, 0.0, 1.0)
-		MapContextScript.colormap_enabled = pv > 0.5
-	var vi := int(d.get("variant", -1))
-	if mapctx_variant != null and vi >= 0 and vi < mapctx_variant.item_count:
-		mapctx_variant.select(vi)
-	_refresh_gates()
-	var sc := int(d.get("scroll", 0))
-	if dock_scroll != null and sc > 0:
-		# after the layout settles, or the scroller clamps it to a height the
-		# content has not reached yet
-		_restore_scroll.call_deferred(sc)
-
-
-func _restore_scroll(v: int) -> void:
-	if dock_scroll != null and is_instance_valid(dock_scroll):
-		dock_scroll.scroll_vertical = v
-
-
-# Every control whose position is part of "how the panel was". Named, because a
-# reopen rebuilds them and only the name survives.
-func _ui_chips() -> Array:
-	return [
-		["on", mapctx_on], ["objects", mapctx_objects],
-		["backdrop", mapctx_backdrop],
-		["optimize", mapctx_optimize], ["col", col_chk], ["shape", shape_chk],
-		["iso", iso_chk], ["ovr", ovr_chk], ["pick", diag_pick],
-	]
-
-
-# ---------- reopening the panel ----------
-#
-# WHAT LIVE RELOAD CANNOT DO. Replacing a script updates the code every existing
-# object runs, which is why a material fix reaches a prop already on screen. It
-# cannot un-create an object. This panel is built inline in _enter_tree, so every
-# control on it was constructed when the editor opened: a change that ADDS,
-# REMOVES or RELABELS a control changes the function that would build it and not
-# the buttons already sitting there. So the plugin is reopened, which runs the
-# real _exit_tree and _enter_tree and rebuilds the panel by exactly the path that
-# builds it at startup.
-#
-# A REOPEN MUST NOT COST THE SCENERY. The first version let the ordinary teardown
-# run, which frees _MAP_CONTEXT and every overlay, so the scene rebuilt itself
-# afterwards - a minute of work to move a button. And because this file is the
-# one that changes most, that was nearly every press of Check for updates. The
-# rebuild was the complaint that started the live reload in the first place.
-#
-# So a reopen for a layout change is SOFT:
-#
-#   * the scene is left exactly as it is. Nothing is restored, because nothing is
-#     going away: the same plugin is coming straight back.
-#   * the long-lived services (the map context, the recorder, the job queue)
-#     are handed across rather than rebuilt. They hold the open game source and
-#     the cell index - state that costs minutes to
-#     rebuild and nothing to keep.
-#
-# They are kept by REPARENTING them out of the dock before it is freed, into the
-# editor's own base control, and picked up again by _enter_tree. A static holds
-# the references: statics live on the script, and the script is not going
-# anywhere, only this object is.
-const PLUGIN_NAME := "highpoly_toggle"
-static var _kept: Dictionary = {}     # service name -> Node, across a soft reopen
-static var _soft_reopen := false      # kept false: the fork has no soft reopen
-# The other half of the same fact, read by the startup restore: it must adopt the
-# scenery that is standing rather than sweep it and build a fresh copy.
-static var _soft_restore := false
-# Set for the life of this instance when it came back from a soft reopen, so the
-# scene-change path does not run the disk restore over a panel that already
-# describes the scene correctly.
-var _soft_applied := false
-# The cold swap's impact class ("materials"/"mixed"/"geometry"), carried from
-# the swap marker to the map state restore, which rebuilds stale scenery once
-# and clears it. Empty = no swap, or a swap that cannot reach anything built.
-var _swap_impact := ""
-
-# Hand a service across the reopen. Reparented rather than orphaned: a node with
-# no parent is outside the tree, and these run timers and awaits.
-func _keep_service(name: String, node: Node) -> void:
-	if node == null or not is_instance_valid(node):
-		return
-	var host := EditorInterface.get_base_control()
-	if host == null:
-		return
-	if node.get_parent() != null:
-		node.get_parent().remove_child(node)
-	host.add_child(node)
-	_kept[name] = node
-
-
-# The other side: adopt one if a soft reopen left it, else null for the caller to
-# construct. Cleared as it is taken, so a later ordinary start cannot pick up a
-# service belonging to a session that has ended.
-func _take_service(name: String) -> Node:
-	if not _kept.has(name):
-		return null
-	var n = _kept[name]
-	_kept.erase(name)
-	if n == null or not is_instance_valid(n):
-		return null
-	if n.get_parent() != null:
-		n.get_parent().remove_child(n)
-	return n
 
 
 # The Object Library icon renderer is gone (fork F-04). Its PNG cache in
@@ -3484,7 +3301,7 @@ func _check_scene_change() -> void:
 	if lbl and old != null: lbl.text = "Different map opened, so everything is back to Low-Poly"
 	# fresh dock instance (editor start / plugin re-enable) — not a scene
 	# switch: bring the overlay back the way this map had it
-	if old == null and r != null and not _soft_applied:
+	if old == null and r != null:
 		_restore_mapctx_state.call_deferred()
 
 # ensure the map's prop meshes are in the shared cache (only when objects are
@@ -3962,10 +3779,6 @@ func _save_mapctx_state() -> void:
 # everything, high-poly models included.
 func _restore_mapctx_state() -> void:
 	var r := EditorInterface.get_edited_scene_root()
-	# A SOFT REOPEN LEFT EVERYTHING STANDING: the same map context node, still
-	# owned by the service that built it and handed across intact.
-	var soft := _soft_restore
-	_soft_restore = false
 	var map: String = mapctx.map_of(r)
 	if map == "": return
 	# A BOOT STARTS CLEAN. Godot reopens whatever scene was last edited, and
@@ -3974,30 +3787,13 @@ func _restore_mapctx_state() -> void:
 	# fought a build already in flight and the editor locked up hard.
 	#
 	# The restore now only re-syncs the CHIPS to an overlay that is ALREADY
-	# BUILT. That is the soft-reopen case (a plugin reload or the cold swap,
-	# where the owner=null overlay nodes survive in the scene and the chips
-	# would otherwise read "off" over visible terrain). A real boot has no
+	# BUILT, where owner=null overlay nodes survived in the scene and the chips
+	# would otherwise read "off" over visible terrain. (The fork has no live
+	# reload or soft reopen any more, F-03, so this is rare.) A real boot has no
 	# overlay, so everything stays off and nothing is applied until asked.
 	# The saved entry is left alone rather than cleared: nothing else reads it,
 	# and the next deliberate toggle rewrites it anyway.
-	#
-	# EXCEPT AFTER A SWAP THAT CHANGED WHAT BUILDS THE SCENERY. The standing
-	# overlay's materials and meshes came out of the code the swap just
-	# replaced, so re-syncing chips to it shows the OLD look and reads as the
-	# update doing nothing (the truckpickup wheels stayed shredded through the
-	# very update that fixed them). Tear the stale overlay down first; the
-	# restore below then rebuilds it through the normal path, with the new
-	# code and fresh material caches. One rebuild per code-that-builds update,
-	# only when scenery is actually standing.
-	var _stale_swap := _swap_impact != "" and _swap_impact != "code" \
-		and _swap_impact != "none"
-	_swap_impact = ""
-	if _stale_swap and r.get_node_or_null(HighpolyMapContext.NODE) != null \
-			and mapctx != null:
-		Log.info("Rebuilding the map context: the update replaced the code "
-			+ "that built what is on screen.")
-		mapctx.apply(r, false, false, false)
-	elif r.get_node_or_null(HighpolyMapContext.NODE) == null:
+	if r.get_node_or_null(HighpolyMapContext.NODE) == null:
 		return
 	var st: Variant = EditorInterface.get_editor_settings().get_project_metadata(
 			"highpoly_mapctx", map, {})
@@ -4095,17 +3891,9 @@ func _restore_mapctx_state() -> void:
 		saved_tex = MODE_LIGHT
 	if mode_btn != null and saved_tex != mode_btn.get_selected_id():
 		mode_btn.select(mode_btn.get_item_index(saved_tex))
-		if soft:
-			# The controls now describe what is already on screen, which is all a
-			# soft reopen needed. Building would tear down the scenery and put
-			# back a copy of it.
-			_refresh_gates()
-			return
 		_mode_changed()          # re-applies the library AND rebuilds the overlay
-	elif not soft:
-		_mapctx_changed()
 	else:
-		_refresh_gates()
+		_mapctx_changed()
 
 # OPEN THE GAME SOURCE, wherever the need arises.
 #
