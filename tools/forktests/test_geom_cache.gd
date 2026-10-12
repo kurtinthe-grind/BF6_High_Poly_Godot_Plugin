@@ -1,8 +1,8 @@
 extends SceneTree
 # OPT-01: the geometry disk cache never served anything - it was skipped
 # whenever the precache was active (every prepared map) and its folder was
-# deleted on every launch. It is now ONE pack per map (segment files written on
-# a worker, read back by name), used with or without the precache.
+# deleted on every launch. It is now ONE pack per map (segment files appended during
+# the build, read back by name), used with or without the precache.
 #
 # Pinned here: the pack container round-trips, ignores and deletes corrupt or
 # outdated segments without crashing, and the mesh codec plus the game source's
@@ -71,6 +71,16 @@ func _init() -> void:
 	q.put("three", _bytes(10, 3))
 	q.close()                       # close flushes
 	check(Pack.count_in(tmp) == 3, "a second segment adds to the pack")
+
+	# dropped without close(): no crash, and no half-written segment is served
+	var lost = Pack.new()
+	lost.open(tmp, "key-a", 1)
+	lost.put("dropped", _bytes(50, 4))
+	lost = null
+	var found = Pack.new()
+	check(found.open(tmp, "key-a", 1) == 3 and not found.has("dropped"),
+		"a pack released without flush() leaves nothing half-written behind")
+	found.close()
 
 	# corrupt segments: garbage, and a valid segment cut short
 	var segs := Array(DirAccess.get_files_at(tmp)).filter(func(f): return str(f).ends_with(".hpk"))

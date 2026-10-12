@@ -13,9 +13,13 @@ extends RefCounted
 # LAYOUT. A pack is a folder of segment files, seg_<usec>_<count>.hpk:
 #   header   u32 MAGIC, u32 FORMAT, u32 version, u32 key length, key (utf8)
 #   records  u32 REC, u32 name length, name (utf8), u64 data length, data
-# A build appends to ONE new segment on a worker thread (put); flush() closes
-# it and renames it from *.part into place, so a crash leaves only a .part,
-# never a short segment that reads as valid. The record count is in the file
+# A build appends to ONE new segment (put); flush() closes it and renames it
+# from *.part into place, so a crash - or a pack dropped without flush() -
+# leaves only a .part (discarded by the next open), never a short segment that
+# reads as valid. Appends are synchronous and buffered: a few hundred KB per
+# item, timed by the callers (t_geom_save, the pack line in the session log).
+# A writer THREAD was tried and dropped: a pack released mid-build left it
+# calling into a freed object. The record count is in the file
 # name so the panel can report a pack's size without opening it.
 #
 # SAFETY. Every length is bounds-checked against the file. A segment with a bad
@@ -39,11 +43,7 @@ var _files := {}                # segment path -> FileAccess (read handles)
 var _mutex := Mutex.new()
 
 # the writer
-var _queue: Array = []          # [name, bytes]
-var _queued := {}               # names accepted this session, written or not
-var _sem := Semaphore.new()
-var _thread: Thread
-var _stop := false
+var _queued := {}               # names accepted this session
 var _part := ""
 var _out: FileAccess
 var _out_count := 0
@@ -157,8 +157,9 @@ func get_bytes(name: String) -> PackedByteArray:
 	return out
 
 
-# Queue an item for the current segment. False when the pack is closed or the
-# name is already in it (or already queued) - first write wins.
+# Append an item to the current segment. False when the pack is closed, the
+# write failed, or the name is already in it - first write wins. Readable after
+# flush().
 func put(name: String, bytes: PackedByteArray) -> bool:
 	if dir.is_empty() or name.is_empty() or name.length() > MAX_NAME:
 		return false
@@ -167,37 +168,10 @@ func put(name: String, bytes: PackedByteArray) -> bool:
 		_mutex.unlock()
 		return false
 	_queued[name] = true
-	_queue.append([name, bytes])
-	if _thread == null:
-		_stop = false
-		_thread = Thread.new()
-		_thread.start(_writer)
+	_write_one(name, bytes)
+	var ok := not _write_error
 	_mutex.unlock()
-	_sem.post()
-	return true
-
-
-func pending() -> int:
-	_mutex.lock()
-	var n := _queue.size()
-	_mutex.unlock()
-	return n
-
-
-func _writer() -> void:
-	while true:
-		_sem.wait()
-		_mutex.lock()
-		var item: Variant = null
-		if not _queue.is_empty():
-			item = _queue.pop_front()
-		var stopping := _stop
-		_mutex.unlock()
-		if item == null:
-			if stopping:
-				return
-			continue
-		_write_one(str(item[0]), item[1] as PackedByteArray)
+	return ok
 
 
 func _write_one(name: String, data: PackedByteArray) -> void:
@@ -235,14 +209,12 @@ func _write_one(name: String, data: PackedByteArray) -> void:
 # Finish the current segment: wait for the writer, close the file and move it
 # into place. Items become readable here. Safe to call when nothing was put.
 func flush() -> void:
-	if _thread != null:
-		_mutex.lock()
-		_stop = true
-		_mutex.unlock()
-		_sem.post()
-		_thread.wait_to_finish()
-		_thread = null
-		_stop = false
+	_mutex.lock()
+	_flush_locked()
+	_mutex.unlock()
+
+
+func _flush_locked() -> void:
 	if _out == null:
 		return
 	_out.flush()
@@ -259,12 +231,10 @@ func flush() -> void:
 		_part = ""
 		return
 	_part = ""
-	_mutex.lock()
 	for e in _out_entries:
 		if not _index.has(e[0]):
 			_index[e[0]] = [final, e[1], e[2]]
 	_out_entries.clear()
-	_mutex.unlock()
 
 
 func close() -> void:
@@ -275,7 +245,6 @@ func close() -> void:
 	_files.clear()
 	_index.clear()
 	_queued.clear()
-	_queue.clear()
 	_write_error = false
 	_mutex.unlock()
 
