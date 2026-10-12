@@ -61,7 +61,7 @@ func _init() -> void:
 	put(base.path_join("highpoly_census.gd"), "v2 census")
 	for f in fams:
 		check(Cache.family_recipe_for_root(base, f) == before[f], "UI edit keeps the %s key" % f)
-	# (OPT-04 full-recipe check added with the exclude list)
+	check(Cache.recipe_for_root(base, "4.6.3") == full_before, "UI edit keeps the full recipe (excluded files)")
 
 	# ---- an edit to what produces the ground packets ----
 	put(base.path_join("bf6_environment.gd"), "v2 env")

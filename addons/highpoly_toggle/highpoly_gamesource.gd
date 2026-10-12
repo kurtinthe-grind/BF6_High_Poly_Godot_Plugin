@@ -1261,7 +1261,10 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 		want := {}) -> bool:
 	error = ""
 	var resolved_install := BF6Container.find_game(game_dir)
-	var install_key: String = preload("highpoly_install_cache.gd").key(resolved_install)
+	# The READER key (install identity + reader scripts), not the whole add-on:
+	# within a session it only has to notice a different install, and keyed on
+	# the full recipe it also dropped everything after any UI edit (OPT-04).
+	var install_key: String = preload("highpoly_install_cache.gd").reader_key(resolved_install)
 	if src != null and (_opened_install_key != install_key or src.game != resolved_install):
 		release_caches()
 		drop_map_data()
@@ -2518,7 +2521,10 @@ func terrain_surface(cache_dir: String, force := false,
 		# does, which is what makes a stale answer impossible rather than
 		# unlikely.
 		env.cache_dir = cache_dir
-		env.cache_key = preload("highpoly_install_cache.gd").key(src.game)
+		# The ENV family key (OPT-04): the install plus bf6_environment.gd, the
+		# core and the reader - not the whole add-on, so a UI change no longer
+		# rewrites ~400 MB of ground packets per map.
+		env.cache_key = preload("highpoly_install_cache.gd").family_key(src.game, "env")
 		if env.prepare_ground(progress):
 			return {"native": true, "slices": env.ground.materials.size()}
 	# EVERY STAGE BELOW NOW REPORTS WHILE IT RUNS, not only when it ends.
@@ -2539,7 +2545,8 @@ func terrain_surface(cache_dir: String, force := false,
 			_panel.call(stage, done, total)
 	var dir_splat := "%s/splat" % cache_dir
 	var meta_path := "%s/layers.json" % dir_splat
-	var cache_key: String = preload("highpoly_install_cache.gd").key(src.game)
+	# The SPLAT family key (OPT-04); SPLAT_VERSION still gates the format.
+	var cache_key: String = preload("highpoly_install_cache.gd").family_key(src.game, "splat")
 	if not force and not cache_key.is_empty() and FileAccess.file_exists(meta_path) \
 			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
 		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
@@ -3019,8 +3026,8 @@ func _window_state(cache_dir: String):
 		return null
 	var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
 	if not (meta is Dictionary) \
-			or preload("highpoly_install_cache.gd").key(src.game).is_empty() \
-			or str((meta as Dictionary).get("source_recipe", "")) != preload("highpoly_install_cache.gd").key(src.game) \
+			or preload("highpoly_install_cache.gd").family_key(src.game, "splat").is_empty() \
+			or str((meta as Dictionary).get("source_recipe", "")) != preload("highpoly_install_cache.gd").family_key(src.game, "splat") \
 			or int((meta as Dictionary).get("splat_v", 0)) != SPLAT_VERSION:
 		return null                    # window density must match the bake's lut
 	var pick := ""
