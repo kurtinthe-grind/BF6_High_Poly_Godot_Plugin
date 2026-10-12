@@ -198,10 +198,9 @@ var _mapctx_gen := 0
 # True while a game-source open is in flight. Every layer toggle re-enters
 # _mapctx_changed, and without this each one starts its own read of the install.
 var _gs_opening := false
-var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a newer version exists
 var banner: Label              # legacy-mode notice ("reorganization pending")
 var jobs: Node                 # HighpolyJobs: the download queue
-var job_row: VBoxContainer     # the one universal bar, in the Check-for-Updates slot
+var job_row: VBoxContainer     # the one universal bar, shown while anything downloads
 # the stage checklist shown while the install is being read
 var read_panel: VBoxContainer
 var read_title: Label
@@ -215,7 +214,6 @@ var log_view: RichTextLabel
 var log_count: Label
                                # download (typed by base, like mapctx/sync — the
                                # global class name isn't registered until a scan)
-var check_btn: Button          # manual "Check for updates" (forces a registry re-check)
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 var _ready_names: Dictionary = {}   # models that landed since the last swap-in pass
 # ---- storage section (dock) ----
@@ -691,27 +689,13 @@ func _enter_tree() -> void:
 	# everything below it.
 	_build_bf6_gate()
 
-	# plugin self-update: hidden unless the registry advertises a newer version
-	#
-	# EXEMPT FROM THE BF6 GATE, both update rows. The gate exists so nothing
-	# tries to read a game that is not there - but updating the plugin reads
-	# GitHub and the staging lane, not the install. Gated, it locked out the
-	# one user who most needs an update: someone whose install is not being
-	# DETECTED yet, waiting on exactly the autodetect fix an update carries.
-	update_btn = Button.new()
-	update_btn.visible = false
-	update_btn.pressed.connect(_do_plugin_update)
-	var up_row := _centred(update_btn)
-	up_row.set_meta("bf6_gate_exempt", true)
-	dock.add_child(up_row)
-
 	banner = Label.new()
 	banner.visible = false
 	banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	banner.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	dock.add_child(banner)
 
-	# ---- the one download bar, shown in place of "Check for updates" ----
+	# ---- the one download bar ----
 	# One bar, not a stack: only one transfer runs at a time now, so a stack
 	# could only ever show one moving row and several idle ones.
 	jobs = _take_service("jobs")
@@ -749,15 +733,7 @@ func _enter_tree() -> void:
 	job_bar.add_child(job_pct)
 	jobs.changed.connect(_refresh_job_bar)
 
-	check_btn = Button.new()
-	check_btn.text = "Check for updates"
-	check_btn.tooltip_text = "Applies a plugin update without restarting the editor: staged updates are copied in first, then any plugin script that changed on disk is reloaded in place. Press it when you are told a fix is ready; it refuses while something is building, so it is always safe to press."
-	check_btn.pressed.connect(_check_updates_now)
-	var ck_row := _centred(check_btn)
-	ck_row.set_meta("bf6_gate_exempt", true)   # see update_btn: updates must
-	dock.add_child(ck_row)                     # work with no install detected
-
-	dock.add_child(job_row)      # takes the button's place while anything downloads
+	dock.add_child(job_row)      # visible only while anything downloads
 
 	# ---- what the read of the install is actually doing ----------------------
 	#
@@ -1918,7 +1894,7 @@ All of it is read from your own Battlefield 6 installation."
 	_apply_bf6_gate()
 
 	var ver_lbl := Label.new()
-	ver_lbl.text = "v%s  ·  TabbedScamper" % HighpolyUpdater.plugin_version()
+	ver_lbl.text = "v%s  ·  TabbedScamper" % _plugin_version()
 	ver_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	ver_lbl.tooltip_text = "Built by TabbedScamper. Frostbite format research by TabbedScamper."
 	ver_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
@@ -1959,7 +1935,6 @@ All of it is read from your own Battlefield 6 installation."
 	# the boot sequence is started from the open path, not from visibility_changed:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
-	HighpolyUpdater.sweep_removed()   # clear out what an older version left behind
 	# Undo what a KILLED bench run left in the user's editor settings. The bench
 	# harness is gone from the fork, but an older install that ran it may have
 	# left a park file with both idle sleeps at 0 - after which the editor
@@ -1989,7 +1964,6 @@ All of it is read from your own Battlefield 6 installation."
 	_adopt_tips.call_deferred()
 	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
-	_check_plugin_update.call_deferred()
 	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
 
 	# Adopted across a soft reopen when there is one to adopt, so the open game
@@ -2272,31 +2246,6 @@ All of it is read from your own Battlefield 6 installation."
 	_refresh_gates()
 
 	# auto-overlay for pieces placed while a detail mode is active
-	# ARM THE LIVE RELOAD with the code this editor just parsed. Doing it here
-	# rather than on the first button press matters: an edit made between
-	# startup and that press would otherwise be adopted as "already loaded"
-	# and never applied.
-	HighpolyReload.arm()
-	# The cold swap's hand-off: the OLD panel triggered it and is gone; this
-	# fresh instance is the proof it worked, and the report says what moved.
-	if HighpolyReload.swap_report != "":
-		Log.info(HighpolyReload.swap_report)
-		HighpolyReload.swap_report = ""
-	# AND WHAT IT MOVED, which decides whether the scenery is stale. The
-	# overlay survives a cold swap on purpose (tearing it down cost a rebuild
-	# per update), but its materials and meshes were built by the code that
-	# was just replaced. A user proved the gap: a material fix applied through
-	# Check for updates, the standing wheels kept the old shredded look, and
-	# the button read as doing nothing. Classify the swapped names; anything
-	# past "code" marks the overlay stale, and the state restore below
-	# rebuilds it fresh instead of re-syncing chips to stale scenery.
-	var _swn: Array = HighpolyReload.take_swap_names()
-	if not _swn.is_empty():
-		_swap_impact = HighpolyReload.impact(_swn)
-		if _swap_impact != "code" and _swap_impact != "none":
-			Log.info(("The update changed %s code, so the scenery on screen was "
-				+ "built by the OLD code - the map state restore will rebuild "
-				+ "it so the change actually shows.") % _swap_impact)
 	get_tree().node_added.connect(_on_node_added)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
@@ -2316,11 +2265,6 @@ All of it is read from your own Battlefield 6 installation."
 		_soft_applied = true
 		_apply_ui(_ui)
 	_startup.call_deferred()
-	# ASK GITHUB ONCE ON OPEN. _check_plugin_update existed, worked, and was
-	# called by NOTHING - the update button could never appear, which a user
-	# proved by releasing v2.3.0 and watching no panel offer it. Deferred so
-	# the dock is in the tree before the HTTP node parents to it.
-	call_deferred("_check_plugin_update")
 
 
 # THE STATE OF THE PANEL, for a saved log.
@@ -2989,7 +2933,7 @@ func _ui_chips() -> Array:
 # anywhere, only this object is.
 const PLUGIN_NAME := "highpoly_toggle"
 static var _kept: Dictionary = {}     # service name -> Node, across a soft reopen
-static var _soft_reopen := false      # set by _reopen_panel, read by _exit_tree
+static var _soft_reopen := false      # kept false: the fork has no soft reopen
 # The other half of the same fact, read by the startup restore: it must adopt the
 # scenery that is standing rather than sweep it and build a fresh copy.
 static var _soft_restore := false
@@ -2997,20 +2941,10 @@ static var _soft_restore := false
 # scene-change path does not run the disk restore over a panel that already
 # describes the scene correctly.
 var _soft_applied := false
-var _needs_reopen := false
 # The cold swap's impact class ("materials"/"mixed"/"geometry"), carried from
 # the swap marker to the map state restore, which rebuilds stale scenery once
 # and clears it. Empty = no swap, or a swap that cannot reach anything built.
 var _swap_impact := ""
-
-func _reopen_panel() -> void:
-	Log.info("Reopening the panel to apply a layout change. The scenery and the "
-		+ "open game source are kept.")
-	_soft_reopen = true
-	_soft_restore = true
-	EditorInterface.call_deferred("set_plugin_enabled", PLUGIN_NAME, false)
-	EditorInterface.call_deferred("set_plugin_enabled", PLUGIN_NAME, true)
-
 
 # Hand a service across the reopen. Reparented rather than orphaned: a node with
 # no parent is outside the tree, and these run timers and awaits.
@@ -3041,215 +2975,13 @@ func _take_service(name: String) -> Node:
 	return n
 
 
-func _hot_reload() -> bool:
-	# Asked on BOTH sides of the reload, because the answer is the difference.
-	# See HighpolyGameSource.geom_epoch for why it has to be a call and not a
-	# constant read.
-	var epoch_before: int = HighpolyGameSource.geom_epoch()
-	var r: Dictionary = HighpolyReload.reload_code()
-	var geom_changed: bool = HighpolyGameSource.geom_epoch() != epoch_before
-	var names: Array = r["names"]
-	if bool(r["first"]):
-		Log.info("Live reload armed: this install is now the baseline, so the "
-			+ "next press picks up whatever has changed since.")
-		return true
-	if not (r["failed"] as Array).is_empty():
-		lbl.text = "Some plugin files would not reload — restart the editor"
-		Log.error("Live reload could not replace: %s" % str(r["failed"]))
-		return false
-	if names.is_empty():
-		Log.info("Plugin code unchanged — nothing to reload.")
-		return true
-
-	var what := HighpolyReload.impact(names, geom_changed)
-	# HEAL THE LIVING INSTANCES FIRST, before anything re-dresses through them.
-	# A swap replaces code but never runs the new initializers on an existing
-	# object, so a member the update ADDED is null on every live instance - and
-	# the very next material build dies on it, dressing the whole map white.
-	# (That exact regression shipped once; see HighpolyReload.heal_new_members.)
-	var _gs0 = mapctx.game_source if mapctx != null else null
-	var _healed := 0
-	for o in [mapctx, _gs0,
-			(_gs0.src if _gs0 != null else null),
-			(_gs0.walk if _gs0 != null else null),
-			previews, jobs]:
-		_healed += HighpolyReload.heal_new_members(o)
-	if _healed > 0:
-		Log.info("Initialized %d member(s) the update added on live objects" % _healed)
-	# REFRESH WHAT IS CHEAP TO RE-ASK, and nothing else.
-	#
-	# map_data holds answers derived from the install, and a reader fix cannot
-	# reach an answer already given. The first version of this dropped the whole
-	# summary, which was far too blunt: apply() clears the scene BEFORE it reloads
-	# the data, so a rebuild that then failed on a missing key left the level torn
-	# down with every later toggle hitting the same error. It also put a minute of
-	# terrain work on the main thread inside a toggle handler.
-	#
-	# Water is re-asked instead, on its own, because it is one small partition
-	# parse and because its staleness is invisible by construction: map_data only
-	# writes a "water" key when water is FOUND, so a level read before the fix
-	# carries an ABSENT key, which every consumer reads as "this level has no
-	# water" rather than "not looked up yet".
-	if what != "code" and what != "none":
-		var _gs = mapctx.game_source if mapctx != null else null
-		if _gs != null and _gs.has_method("refresh_water"):
-			_gs.refresh_water()
-		# The scene's Water node was built from the PRE-reload answer, so a
-		# refreshed answer is invisible until the layer rebuilds. If it is on,
-		# re-fire its own handler (deferred: this runs inside the reload) so a
-		# water fix reaches the screen without a manual off/on - the exact step
-		# users skip, reasonably, after pressing a button called "updates".
-		if mapctx_water != null and mapctx_water.button_pressed:
-			(func():
-				if mapctx_water != null and is_instance_valid(mapctx_water):
-					mapctx_water.toggled.emit(true)).call_deferred()
-	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
-	match what:
-		"code":
-			# Dock and logging only. Nothing already built can look different,
-			# so re-dressing thousands of surfaces would be pure cost.
-			lbl.text = "Reloaded %d file(s)" % names.size()
-		"materials", "mixed":
-			var gs = mapctx.game_source if mapctx != null else null
-			if gs != null and gs.has_method("invalidate_materials"):
-				var st: Dictionary = gs.invalidate_materials()
-				Log.info("Re-dressed %d mesh(es), %d surface(s) in %d ms"
-					% [st["meshes"], st["surfaces"], st["ms"]])
-				lbl.text = "Reloaded %d file(s), re-dressed %d mesh(es)" 					% [names.size(), st["meshes"]]
-			else:
-				lbl.text = "Reloaded %d file(s)" % names.size()
-			# AND THE OBJECTS THE USER PLACED, which the re-dress above does not
-			# reach: it re-dresses the meshes the MAP CONTEXT recorded, and a
-			# placed object's overlay is a separate node holding its own mesh.
-			# Without this a material fix landed on every prop on the map and on
-			# anything placed after the reload, and left the objects already in
-			# the scene untouched.
-			#
-			# Guarded and paced by _swap_placed_after_build rather than calling
-			# the apply straight: it refuses in Low-Poly, where the SDK's own
-			# proxies are what the user asked to see, and it restores the
-			# distance cull afterwards.
-			LibScript.build_epoch += 1
-			_swap_placed_after_build()
-			if what == "mixed":
-				# Those files resolve materials AND build geometry, and only the
-				# first half of that is live now. Saying so beats letting a road
-				# height change look like it applied.
-				lbl.text += ". Rebuild the map to pick up the geometry change."
-				Log.info("Those files also build geometry (roads, terrain drape, "
-					+ "prop meshes). If that is what changed, toggle Map Context "
-					+ "off and on.")
-		"geometry":
-			# Honest rather than convenient: the built meshes came out of the
-			# code that just changed, and no amount of re-dressing fixes a
-			# vertex. Say what it needs instead of half-doing it.
-			lbl.text = "Reloaded %d file(s) — rebuild the map to apply" 				% names.size()
-			Log.warn("Those files decide what geometry is BUILT, so the meshes "
-				+ "already in the scene are stale. Toggle Map Context off and "
-				+ "on to rebuild.")
-	# The panel is built once, at startup. A change to the file that builds it
-	# cannot move a control that already exists, so say so and put the button
-	# that applies it where the message is.
-	# DONE, not offered. The plugin knows when a layout change cannot be applied
-	# in place, and a button that must be pressed after another button is one the
-	# user has to learn the meaning of. The caller reopens and stops there,
-	# because reopening frees this object.
-	_needs_reopen = names.has("highpoly_toggle.gd")
-	if _needs_reopen:
-		Log.info("The panel itself changed. Its controls were built when the "
-			+ "editor opened, so the plugin is being reopened to build them "
-			+ "again. The level scenery is rebuilt with it.")
-	return true
-
-
-func _check_updates_now() -> void:
-	check_btn.disabled = true
-	# THE BUTTON SAYS "Check for updates", SO CHECK GITHUB. This call was only
-	# ever wired to nothing (see _enter_tree); the button applied staged files
-	# and reloaded local changes but never asked the releases API, so a fresh
-	# release sat invisible until an editor restart - and then still invisible,
-	# because the startup check was not wired either. Announced, so pressing
-	# the button says "up to date" or "vX.Y.Z is available" instead of nothing.
-	_check_plugin_update(true)
-	# STAGED UPDATES FIRST. Mid-session fixes cannot be written into res://
-	# (the editor hot-reloads changed scripts underneath running code - the
-	# "Bad address index" crash), so they land in user://highpoly/staged and
-	# THIS press - a moment the user chose - is what moves them into the addon
-	# before the normal reload below picks them up. Refused while anything is
-	# building, because swapping code under a live build is the exact crash
-	# the staging exists to avoid. "starting up" counts as quiet: it is the
-	# boot crumb, and nothing has armed a build yet when it still reads that.
-	if HighpolyReload.staged_count() > 0:
-		var _c := HighpolyVitals.crumb_now()
-		if not (HighpolyVitals.crumb_is_idle() or _c == "starting up"):
-			check_btn.disabled = false
-			lbl.text = "An update is staged, but something is building (%s) — press again when it settles" % _c
-			return
-		var staged: Dictionary = HighpolyReload.apply_staged()
-		if not (staged["failed"] as Array).is_empty():
-			check_btn.disabled = false
-			lbl.text = "Some staged files could not be applied — try once more, or restart the editor"
-			Log.error("Staged update could not replace: %s" % str(staged["failed"]))
-			return
-		var _ap := staged["applied"] as Array
-		if not _ap.is_empty():
-			Log.info("Applied %d staged file(s): %s" % [_ap.size(), ", ".join(_ap)])
-		# WHAT THIS BUTTON CANNOT DO, said plainly rather than left to be
-		# discovered. Scripts and shaders go live here; anything else - the
-		# native extension, the fx data files, binaries - is only picked up
-		# when the editor next starts, because nothing can swap them under a
-		# running session. Saying so is what makes the button trustworthy
-		# enough to use instead of closing the editor every time.
-		var _ig := (staged.get("ignored", []) as Array)
-		if not _ig.is_empty():
-			Log.warn(("%d staged file(s) are not code and stay where they are "
-				+ "until the editor is next started: %s")
-				% [_ig.size(), ", ".join(_ig)])
-	# CODE FIRST, and only what actually moved.
-	#
-	# This button used to be about downloading models. There are no models to
-	# download: everything is read from the install. What is left is the thing it
-	# grew into, which is applying plugin code without an editor restart. The
-	# scripts and shaders whose CONTENT differs are replaced in place, and objects
-	# already holding them run the new code immediately.
-	#
-	# Hash-compared rather than mtime-compared on purpose. A zip extraction
-	# stamps every file with the same "now", so an mtime test would replay the
-	# entire addon on every press and re-dress a map for nothing.
-	#
-	# SCRIPT CHANGES TAKE THE COLD SWAP, not the live rebind. Hot reload onto
-	# live instances is where every "now restart the editor" came from: null
-	# new members, constants folded stale into callers, big scripts silently
-	# keeping old bytecode. The cold swap disables the plugin, replaces the
-	# scripts while nothing holds them, and re-enables - a plugin-only
-	# restart in a couple of seconds. Triggered DEFERRED off the tree because
-	# the disable frees THIS dock, and freeing the object whose method is on
-	# the stack is a crash. Shader-only changes keep the cheap live path.
-	var pend: Dictionary = HighpolyReload.pending()
-	var moved: Array = (pend["changed"] as Array) + (pend["added"] as Array)
-	var has_gd := false
-	for f in moved:
-		if str(f).get_extension().to_lower() == "gd":
-			has_gd = true
-			break
-	if has_gd and not bool(pend["first"]):
-		lbl.text = "Applying the update - the panel rebuilds itself in a moment"
-		Log.info("Cold swap: %d changed file(s), restarting the plugin in place"
-			% moved.size())
-		get_tree().process_frame.connect(Callable(HighpolyReload, "cold_swap"),
-			CONNECT_ONE_SHOT | CONNECT_DEFERRED)
-		return
-	if not _hot_reload():
-		check_btn.disabled = false
-		return
-	if _needs_reopen:
-		# Nothing after this point: reopening frees the plugin, and the storage
-		# readout below awaits, so it would resume inside a freed object.
-		lbl.text = "Applying a panel change…"
-		_reopen_panel()
-		return
-	check_btn.disabled = false
-	_refresh_storage()
+# The version in plugin.cfg. The self-updater that used to report it is gone.
+func _plugin_version() -> String:
+	var cf := ConfigFile.new()
+	var cfg := (get_script() as Script).resource_path.get_base_dir().path_join("plugin.cfg")
+	if cf.load(cfg) != OK:
+		return "0.0.0"
+	return str(cf.get_value("plugin", "version", "0.0.0"))
 
 # ---------- the floating tool panel ----------
 # The tools live in their own window rather than an editor dock. Level building
@@ -3595,7 +3327,6 @@ func _refresh_job_bar() -> void:
 func _refresh_job_bar_body() -> void:
 	var busy: bool = jobs.busy()
 	job_row.visible = busy
-	if check_btn: check_btn.visible = not busy
 	if not busy: return
 	# the journal's "did the user see progress" counter: only a VALUE CHANGE
 	# counts - redrawing the same percentage is not progress to a human
@@ -4274,49 +4005,6 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	lbl.text = "%s purged. About %s freed; it rebuilds from your game install on demand." % [map,
 		_human_size(int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)))]
 	_refresh_storage()
-
-# ---------- plugin self-update ----------
-# `announce` makes the outcome visible on the status line - the manual
-# button's press must say something either way, where the silent startup
-# check only reveals the update button when there is one.
-func _check_plugin_update(announce := false) -> void:
-	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
-		if new_version != "" and is_instance_valid(update_btn):
-			update_btn.text = "Update Plugin to v%s" % new_version
-			update_btn.tooltip_text = "A newer version of this plugin is available. One click installs it; restart the editor afterwards."
-			update_btn.visible = true
-		if announce and is_instance_valid(lbl):
-			lbl.text = ("v%s is available - press Update Plugin above" % new_version) \
-				if new_version != "" \
-				else "Plugin is up to date (v%s)" % HighpolyUpdater.plugin_version())
-
-func _do_plugin_update() -> void:
-	update_btn.disabled = true
-	# the updater fetches into memory, so there's no byte stream to track — show
-	# an indeterminate row anyway, so this download isn't the one silent one
-	# the updater fetches into memory, so there is no byte stream to track — it
-	# still takes a turn in the queue so it cannot race a model download
-	var token: int = await jobs.acquire("Plugin update")
-	# RELEASE OUR OWN LOCK FIRST. The panel's video player holds waves.ogv
-	# open, and Windows will not overwrite an open file - the updater's
-	# hash-skip already avoids rewriting an unchanged video, but a release
-	# that DOES change it must not fail on our own player.
-	var _vid_stream = null
-	if video != null and is_instance_valid(video):
-		_vid_stream = video.stream
-		video.stop()
-		video.stream = null
-	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String):
-		lbl.text = msg
-		Log.info(msg))
-	if _vid_stream != null and video != null and is_instance_valid(video):
-		video.stream = _vid_stream
-		_sync_backdrop()
-	jobs.release(token, ok, "" if ok else "see the log for what failed")
-	if ok:
-		update_btn.text = "Restart editor to finish update"
-	else:
-		update_btn.disabled = false
 
 # When the user switches scene tabs, tear down our heavy owner=null overlays on
 # the scene we're LEAVING (Map Context = tens of thousands of nodes; high-poly =

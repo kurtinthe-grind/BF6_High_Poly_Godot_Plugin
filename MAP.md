@@ -29,9 +29,8 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 
 **Process**
 - L1. Never force-close the user's editor. No taskkill by image name, ever.
-  Deploy only when the user says the editor is closed; otherwise stage to
-  `user://highpoly/staged` and let them press "Check for updates"
-  (`highpoly_reload.gd:74-131` is the mechanism).
+  Deploy only when the user says the editor is closed. (The staging lane and
+  "Check for updates" were removed in the fork, F-03.)
 - L2. Never write under `GodotProject/` outside this repo while the editor is
   open — hot-reload of duplicate classes crashes it ("Bad address index").
 - L3. Every change goes through the gate (`gate_sandbox.py`) before deploy or
@@ -167,7 +166,7 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 - highpoly_log (398) session log · highpoly_journal (153) build journal (BJournal)
 - highpoly_jobs (191) THE progress model · highpoly_profiler (1,054) session recorder + crash crumbs
 - highpoly_profile (360) per-frame µs · highpoly_vitals (565) machine truth, stalls, work_tasks
-- highpoly_reload (454) staged deploy / hot reload / cold swap · highpoly_updater (478) GitHub self-update
+- highpoly_reload (454) staged deploy / hot reload / cold swap · highpoly_updater (478) GitHub self-update — both **removed in the fork (F-03)**
 - highpoly_store (589) GLB loader + thumbs (+dead index) · highpoly_lib (982) overlay apply + shared vocabulary (HP_NODE…)
 - highpoly_diagnose (826) pick/inspect engine · highpoly_census (834) scene pricing
 - highpoly_flightrun (1,548) THE bench · highpoly_autorun (1,327) legacy bench (~60% duplicate) — both **removed in the fork (F-05a)**

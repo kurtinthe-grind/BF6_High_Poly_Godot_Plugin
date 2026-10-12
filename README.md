@@ -71,12 +71,9 @@ download choice.
 
 ## Staying up to date
 
-- **The plugin updates itself.** When a newer version exists an
-  **"Update Plugin → vX.Y.Z"** button appears; one click installs it.
-  **Check for updates** forces that check immediately, and since 2.0 it
-  applies the new code live in most cases rather than making you restart the
-  editor. When a change genuinely cannot be hot-applied it says so and offers
-  the button that can.
+- **Plugin updates come through this fork's own releases.** The fork removed
+  the self-updater, the update buttons and live reload (F-03); the plugin
+  makes no network requests.
 - **Game data never goes stale.** There is nothing to re-sync after a
   Battlefield patch: the plugin reads whatever is installed at the moment you
   open a map. The build cache versions itself and is rebuilt when the reader
@@ -123,8 +120,7 @@ parts. High-poly objects can be selected and grabbed like anything else, with
 the proxy staying pickable but drawing nothing. Doors swing on their real
 hinges.
 
-**Live reload.** *Check for updates* applies new plugin code without an editor
-restart in most cases, and says so plainly when a change cannot be hot-applied.
+**Live reload.** Removed in the fork (F-03).
 
 **Speed.** Container mount 21.5 s to 0.81 s. Texture sharing across props took
 a build from 40.7 s to 30.4 s and VRAM from 15.5 GB to 7.8 GB. Building one

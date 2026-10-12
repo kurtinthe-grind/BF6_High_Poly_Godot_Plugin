@@ -47,11 +47,15 @@ Profiler API: `event` :92, `crumbs_begin/crumb/crumbs_end/last_session_end` :192
 `class_name HighpolyVitals`, static, driven by the dock heartbeat (`sample()` toggle:1810). `free_mb` :95, `pressure()` :110 (TIGHT 2048 / CRITICAL 900 MB), `crumb/crumb_is_idle/crumb_age_ms` :158/:172/:186, **`work_tasks(items, cores)` :219 — THE thread policy: min(items, cores-2)**, `tick_long` :228 (10s threshold then Log.flush), `sample` :253 (stall detector = heartbeat lateness, keeps worst 40), `machine` :363, `report` :392. Budgets :85-89: heap 8192 MB, VRAM 5120 MB.
 
 ## highpoly_reload.gd (454) — the staged-deploy law
+> Removed in the fork (F-03).
+
 `class_name HighpolyReload`, static. `STAGED_DIR "user://highpoly/staged"` :90. Rule (:74-89): nothing writes `res://` while the editor is open; deploys stage FLAT `.gd`/`.gdshader` files there.
 "Check for updates" sequence (toggle:2623): GitHub check → if `staged_count() > 0` refuse unless `crumb_is_idle()` (:2642) → `apply_staged()` :113 → `pending()` :194 → any .gd moved = `cold_swap()` :306 (disable plugin, 2 frames, CACHE_MODE_REPLACE, re-enable) else `_hot_reload` (reload_code :225 shaders-first toggle-last, `heal_new_members` :415, `impact()` :384 → materials bumps `LibScript.build_epoch`; geometry refuses).
 `plugin_dir()` :70 duplicated verbatim in updater :227.
 
 ## highpoly_updater.gd (478)
+> Removed in the fork (F-03).
+
 `class_name HighpolyUpdater`, static. `_fetch` :56 (4 attempts, backoff, stall watch `STALL_SECS 45`), `plugin_version` :230, `is_newer_version` :243, `github_latest` :283, `check_plugin_update` :333, `sweep_removed` :371 (`REMOVED_FILES`: highpoly_migrate/sync/jobbars/turbo), `update_plugin` :391 (zip → hash-compare → extract → `cold_swap`). **Dead:** `fetch_to_file` :145 (duplicate of _fetch), `remote_etag` :197.
 
 ## highpoly_store.gd (589)

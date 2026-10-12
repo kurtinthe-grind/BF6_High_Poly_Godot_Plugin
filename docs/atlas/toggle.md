@@ -30,7 +30,7 @@ The EditorPlugin / UI layer. `_enter_tree` runs L534-L1985 (~1450 lines) and is 
 
 **L2319-L2420 — Soft-reopen UI capture/restore.** `_capture_ui()` L2334, `_apply_ui(d)` L2353, `_ui_chips()` L2411.
 
-**L2422-L2711 — Soft reopen, live reload, "Check for updates".** `PLUGIN_NAME` L2452, `_reopen_panel()` L2464, `_keep_service/_take_service` L2475/L2490, `_hot_reload()` L2502 (heal L2530-2536, impact match L2565-2607), `_check_updates_now()` L2623 (staged apply L2640-2665, cold-swap decision L2686-2699).
+**L2422-L2711 — Soft reopen, live reload, "Check for updates".** *(Live reload, `_reopen_panel` and "Check for updates" removed in the fork, F-03.)* `PLUGIN_NAME` L2452, `_reopen_panel()` L2464, `_keep_service/_take_service` L2475/L2490, `_hot_reload()` L2502 (heal L2530-2536, impact match L2565-2607), `_check_updates_now()` L2623 (staged apply L2640-2665, cold-swap decision L2686-2699).
 
 **L2712-L2823 — Window consts, tips, log sink, SDK hide, `_lane`.** `_log_line` L2751 (thread-hops to main L2762), **`_lane(label) -> Callable` L2816 — THE canonical progress-lane factory.**
 

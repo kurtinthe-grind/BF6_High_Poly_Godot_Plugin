@@ -31,7 +31,7 @@ and how releases/updates work.
 | `highpoly_doors.gd` | Interactable-door swing: left double-click in the 3D viewport (via `EditorPlugin._forward_3d_gui_input`) ray-picks a known door proxy by local AABB and tweens its high-poly overlay leaf around the real hinge (hinge transform + swing angle per door in the plugin manifest's door specs, mined from the game's `interactabledoorcontrol` data). Open state is remembered on the node so mode switches rebuild it. |
 | `highpoly_previews.gd` | Swaps the SDK Object Library thumbnails to locally-rendered previews of the high-poly models (off-screen SubViewport, cached to `user://highpoly/thumbs/`), remembering stock icons for restore. |
 | `highpoly_turbo.gd` | Editor performance tools: distance cull, behind-camera cull for static map geometry, static-shadow toggle. Pure runtime property tweaks. |
-| `highpoly_updater.gd` | Registry plumbing (manifest URL, throttling-aware fetch, ETag HEAD) and **plugin self-update** (version check + zip-over-install). Model downloading itself lives in `highpoly_sync.gd`. |
+| `highpoly_updater.gd` | **Removed in the fork (F-03).** Registry plumbing (manifest URL, throttling-aware fetch, ETag HEAD) and **plugin self-update** (version check + zip-over-install). Model downloading itself lives in `highpoly_sync.gd`. |
 | `terrain_layers/*.png` | Tiling ground/cliff albedo+normal used by the detail terrain shader. |
 
 ## Data flow

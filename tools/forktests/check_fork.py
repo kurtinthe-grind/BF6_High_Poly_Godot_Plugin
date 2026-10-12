@@ -27,10 +27,18 @@ RULES: dict[str, dict] = {
         "forbid": [r"\bHighpolyAutorun\b", r"\bHighpolyFlightRun\b", r"\bHighpolyFlightPath\b",
                    r"\bFlightPath\.", r"Record flight path", r"BF6_AUTORUN", r"BF6_PERFRUN"],
     },
+    "F-03": {
+        "absent": ["highpoly_updater.gd", "highpoly_reload.gd"],
+        "forbid": [r"\bHighpolyUpdater\b", r"\bHighpolyReload\b", r"\bupdate_btn\b",
+                   r"\bcheck_btn\b", r"\b_check_updates_now\b", r"\b_hot_reload\b",
+                   r"\b_reopen_panel\b", r"\b_check_plugin_update\b",
+                   r"\b_do_plugin_update\b", r"api\.github\.com"],
+    },
 }
 
 ENABLED: list[str] = [
     "F-05a",
+    "F-03",
 ]
 
 

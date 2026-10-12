@@ -23,9 +23,6 @@ viewport wide, and a permanent right-hand dock costs ~400px of it. Closing the
 panel only hides it: the background sync, map-context builds and downloads all
 keep running. Its position and open/closed state are remembered per project.
 
-The panel offers a one-click **Update Plugin** button whenever a newer plugin
-version is published; model fixes and map-data refreshes arrive on their own.
-
 ## Look
 
 Season 4 (Pacific Front) styling: a looping wave backdrop under white controls
