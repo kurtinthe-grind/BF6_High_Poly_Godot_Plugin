@@ -1269,6 +1269,19 @@ static func _fail(stage: String, why: String) -> String:
 		stage, why, free_mb, heap_mb]
 
 
+static var _types_shared: Dictionary = {}   # {key, types}: see open_map, OPT-09
+var _types_reused := false
+
+
+static func _types_key(exe: String) -> String:
+	var f := FileAccess.open(exe, FileAccess.READ)
+	if f == null:
+		return ""
+	var size := f.get_length()
+	f.close()
+	return "%s|%d|%d" % [exe.simplify_path().to_lower(), size, FileAccess.get_modified_time(exe)]
+
+
 func open_map(map: String, game_dir := "", progress := Callable(),
 		want := {}) -> bool:
 	error = ""
@@ -1367,7 +1380,6 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 
 	if progress.is_valid():
 		progress.call(ST_TYPES, 0, 0)
-	types = BF6Types.new()
 	var exe := ""
 	for c in BF6Types.exe_candidates(src.game):
 		if FileAccess.file_exists(c):
@@ -1377,44 +1389,56 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 		error = _fail("finding the type database",
 			"no bf6.exe under %s — the type layouts live in it" % src.game)
 		return false
-	if not types.open(exe):
-		error = _fail("reading the type database", types.error)
-		return false
-	# EA INSTALLS: THE SCHEMA IN THE EXE IS DRM-ENCRYPTED, SO FALL BACK TO A
-	# DATABASE. EA App wraps bf6.exe in Origin DRM and the type schema reads as
-	# ciphertext (entropy ~8.0 against a plain ~3.4), so this executable cannot
-	# describe the map. A database generated once from a readable (or OOA-lifted)
-	# exe carries the same build's schema and serves every install of it. The exe
-	# is preferred WHEN READABLE, so Steam and lifted installs always use their
-	# own - the build can never be stale - and only an encrypted one reaches for
-	# the database.
-	var _from_db := false
-	var ti_bits := float(types.ti_entropy().get("bits", 0.0))
-	if ti_bits > 7.5:
-		var db_path := _find_type_db()
-		var dbt := BF6Types.new()
-		if db_path != "" and dbt.open_db(db_path):
-			# Swap the reader; open_map builds the walk from `types` just below,
-			# so nothing else needs to change - the DB serves layout_full/resolve
-			# in place of the encrypted executable.
-			types = dbt
-			_from_db = true
-			HighpolyLog.info("This install's executable is DRM-encrypted; reading "
-				+ "the map's object types from the generated database %s instead."
-				% db_path.get_file())
-		else:
-			# NO DATABASE: DO NOT FAIL THE WHOLE OPEN. Mounting and Detail Mode
-			# (skinning the user's own placed objects) need no type schema, so an
-			# EA user with no database still gets those - only the map's OWN
-			# objects need the walk, which will come back empty and say why. This
-			# also keeps gen_typedb bootstrappable: it opens the map here, then
-			# supplies its own lifted types, so open must not refuse an encrypted
-			# exe before that.
-			HighpolyLog.warn("This install's executable is DRM-encrypted (%.1f "
-				% ti_bits + "bits) and no type database was found, so the map's "
-				+ "own objects cannot be read. Terrain, textures and your placed "
-				+ "objects still work. Generate a database with ooa_lift then "
-				+ "gen_typedb, or install the shipped bf6_types.bin.")
+	# THE TYPE LAYOUTS ARE KEPT ACROSS OPENS (OPT-09). They were re-read out of
+	# bf6.exe on every open and every map switch (0.75 s each) although they
+	# depend only on the executable. Reused while the same exe (path, size,
+	# modification time) is in place; a game update or another install misses.
+	var _tkey := _types_key(exe)
+	_types_reused = false
+	if _tkey != "" and str(_types_shared.get("key", "")) == _tkey and _types_shared.get("types") != null:
+		types = _types_shared["types"]
+		_types_reused = true
+	else:
+		types = BF6Types.new()
+		if not types.open(exe):
+			error = _fail("reading the type database", types.error)
+			return false
+		# EA INSTALLS: THE SCHEMA IN THE EXE IS DRM-ENCRYPTED, SO FALL BACK TO A
+		# DATABASE. EA App wraps bf6.exe in Origin DRM and the type schema reads as
+		# ciphertext (entropy ~8.0 against a plain ~3.4), so this executable cannot
+		# describe the map. A database generated once from a readable (or OOA-lifted)
+		# exe carries the same build's schema and serves every install of it. The exe
+		# is preferred WHEN READABLE, so Steam and lifted installs always use their
+		# own - the build can never be stale - and only an encrypted one reaches for
+		# the database.
+		var _from_db := false
+		var ti_bits := float(types.ti_entropy().get("bits", 0.0))
+		if ti_bits > 7.5:
+			var db_path := _find_type_db()
+			var dbt := BF6Types.new()
+			if db_path != "" and dbt.open_db(db_path):
+				# Swap the reader; open_map builds the walk from `types` just below,
+				# so nothing else needs to change - the DB serves layout_full/resolve
+				# in place of the encrypted executable.
+				types = dbt
+				_from_db = true
+				HighpolyLog.info("This install's executable is DRM-encrypted; reading "
+					+ "the map's object types from the generated database %s instead."
+					% db_path.get_file())
+			else:
+				# NO DATABASE: DO NOT FAIL THE WHOLE OPEN. Mounting and Detail Mode
+				# (skinning the user's own placed objects) need no type schema, so an
+				# EA user with no database still gets those - only the map's OWN
+				# objects need the walk, which will come back empty and say why. This
+				# also keeps gen_typedb bootstrappable: it opens the map here, then
+				# supplies its own lifted types, so open must not refuse an encrypted
+				# exe before that.
+				HighpolyLog.warn("This install's executable is DRM-encrypted (%.1f "
+					% ti_bits + "bits) and no type database was found, so the map's "
+					+ "own objects cannot be read. Terrain, textures and your placed "
+					+ "objects still work. Generate a database with ooa_lift then "
+					+ "gen_typedb, or install the shipped bf6_types.bin.")
+		_types_shared = {"key": _tkey, "types": types}
 	# WHICH EXE WON, recorded because it is a real choice with consequences and
 	# the log never said. SP and MP carry DIFFERENT type databases, and picking
 	# the wrong one resolves types to the WRONG LAYOUTS rather than failing -
@@ -1443,11 +1467,10 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	for g in EDV_TYPES:
 		walk.want_types[str(g)] = "edv"
 	walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
-	# Always the install: the type layouts are read out of bf6.exe on every open
-	# and the only caches BF6Types keeps are in-memory ones, so this row never
-	# goes warm and there is no point looking for a cache that is not there.
-	note_phase("typeinfo", Time.get_ticks_msec() - t, 1, "exe", FROM_INSTALL,
-		exe.get_file())
+	# From memory when an earlier open in this session read the same exe.
+	note_phase("typeinfo", Time.get_ticks_msec() - t, 1, "exe",
+		FROM_MEMORY if _types_reused else FROM_INSTALL,
+		exe.get_file() + (" (layouts kept from an earlier open)" if _types_reused else ""))
 	t = Time.get_ticks_msec()
 	# WHETHER THE INDEX WAS BUILT OR READ, decided by whether it reported any
 	# progress at all. bf6_source.partition_index returns a cached dictionary

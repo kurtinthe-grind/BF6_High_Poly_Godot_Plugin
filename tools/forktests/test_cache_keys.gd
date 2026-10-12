@@ -108,4 +108,13 @@ func _init() -> void:
 	stale._load_texture_order()
 	check(stale._tex_order.is_empty(), "an order with another header is ignored")
 	DirAccess.remove_absolute(GS.texture_order_path(lvl))
+
+	# ---- OPT-09: type layouts are reused only for the same executable ----
+	var exe := tmp.path_join("bf6.exe")
+	put(exe, "MZ v1")
+	var k1: String = GS._types_key(exe)
+	check(k1 != "" and k1 == GS._types_key(exe), "the exe key is stable")
+	put(exe, "MZ v2 patched")
+	check(GS._types_key(exe) != k1, "a patched exe (new size) is another key")
+	check(GS._types_key(tmp.path_join("missing.exe")) == "", "no exe, no key")
 	quit(1 if fails else 0)
