@@ -535,7 +535,7 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 	# per-instance variant selection (double-click cycling, highpoly_variants.gd):
 	# the chosen variant GLB replaces the base model for this node only. A stale
 	# selection whose file is gone falls back to the base silently.
-	var vname := String(node.get_meta(VARIANT_META, ""))
+	var vname := String(HighpolyInstanceState.get_value(node, VARIANT_META, ""))
 	if vname != "":
 		var vpath := variant_path(key, vname)
 		if vpath != "":
@@ -718,7 +718,7 @@ static func _set_proxy_visible(node: Node3D, vis: bool, root_hint: Node = null) 
 # legacy/staging layout (res://highpoly/<Proxy>/). Discovery is a cheap
 # directory glob cached per proxy; nothing reads variant metadata per node.
 
-const VARIANT_META := "hp_variant"   # proxy-node meta: active variant ("" = base)
+const VARIANT_META := "hp_variant"   # key in HighpolyInstanceState (never node meta): active variant ("" = base)
 
 static var _var_disc: Dictionary = {}     # proxy -> {variant: glb_path} (merged, cached)
 static var _var_scenes: Dictionary = {}   # glb_path -> PackedScene (null = parse failed)

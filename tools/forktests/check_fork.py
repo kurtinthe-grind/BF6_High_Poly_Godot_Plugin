@@ -75,6 +75,11 @@ RULES: dict[str, dict] = {
                    r"vehicle://", r"highpoly\.loadout", r"\bhighpoly_loadout\b",
                    r"_bf6_open_loadout", r"_bf6_loadout_items", r"_selected_spawners"],
     },
+    "HP-006": {
+        "absent": [],
+        "forbid": [r"set_meta\(\s*(HighpolyLib\.)?VARIANT_META", r"get_meta\(\s*(HighpolyLib\.)?VARIANT_META",
+                   r"set_meta\(\s*OPEN_META", r"get_meta\(\s*OPEN_META"],
+    },
 }
 
 ENABLED: list[str] = [
@@ -85,6 +90,7 @@ ENABLED: list[str] = [
     "F-07",
     "F-06",
     "F-05b",
+    "HP-006",
 ]
 
 
