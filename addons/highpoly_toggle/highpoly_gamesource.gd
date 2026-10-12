@@ -6237,14 +6237,21 @@ func _assemble_precached(res_name: String, scope: String, var_hash: int) -> Arra
 static func texture_order_path(level_name: String) -> String:
 	return TEXTURE_ORDER_DIR.path_join(level_name + ".txt")
 
-# First line: the add-on recipe the order was recorded with (material rules decide
-# which textures are asked for). A stale order only lowers the read-ahead hit rate.
+# First line: the texture-order FAMILY recipe (reader scripts + a version), not
+# the whole add-on (OPT-03). Keyed on the full recipe, every plugin build threw
+# the order away, preparation no longer records one, and the read-ahead
+# reported "had ready 0" on every open. Material rules decide which textures are
+# asked for, but a stale order only lowers the hit rate - it never changes what
+# is drawn - so the misses are simply learned and appended (_learn_texture).
+static func texture_order_header() -> String:
+	return preload("highpoly_install_cache.gd").family_recipe("texture_order")
+
 func _load_texture_order() -> void:
 	var path := texture_order_path(level)
 	if not FileAccess.file_exists(path):
 		return
 	var lines := FileAccess.get_file_as_string(path).split("\n", false)
-	if lines.is_empty() or lines[0] != preload("highpoly_install_cache.gd").recipe():
+	if lines.is_empty() or lines[0] != texture_order_header():
 		return
 	for i in range(1, lines.size()):
 		var n := lines[i]
@@ -6253,7 +6260,11 @@ func _load_texture_order() -> void:
 			_tex_order.append(n)
 
 func _learn_texture(an: String) -> void:
-	if record_textures or not _pc_ready or _pc_level != level or not _tex_order.is_empty() or _learned_seen.has(an):
+	# LEARNS MISSES TOO. It used to learn only while no order existed, so the
+	# first open's order was frozen forever and every texture a later build
+	# asked for outside it was a read-ahead miss.
+	if record_textures or not _pc_ready or _pc_level != level or _learned_seen.has(an) \
+			or _tex_position.has(an):
 		return
 	_learned_seen[an] = true
 	_learned.append(an)
@@ -6264,14 +6275,17 @@ func _learn_texture(an: String) -> void:
 func _save_learned() -> void:
 	if _learned_level.is_empty() or _learned.size() <= _learned_saved:
 		return
-	if save_texture_order(_learned_level, _learned):
+	# The loaded order first, then what this session learned beyond it.
+	var names := PackedStringArray(_tex_order) if _learned_level == level else PackedStringArray()
+	names.append_array(_learned)
+	if save_texture_order(_learned_level, names):
 		_learned_saved = _learned.size()
 
 
 static func save_texture_order(level_name: String, names: PackedStringArray) -> bool:
 	DirAccess.make_dir_recursive_absolute(TEXTURE_ORDER_DIR)
 	var seen := {}
-	var lines := PackedStringArray([preload("highpoly_install_cache.gd").recipe()])
+	var lines := PackedStringArray([texture_order_header()])
 	for n in names:
 		if seen.has(n):
 			continue

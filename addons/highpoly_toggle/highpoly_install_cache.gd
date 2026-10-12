@@ -143,6 +143,69 @@ static func reader_key(path: String) -> String:
 	var code := reader_recipe()
 	return (str(result.get("identity", "")) + ":" + code).sha256_text() if result.get("ok", false) and not code.is_empty() else ""
 
+# ---------------------------------------------------------------------------
+# PER-FAMILY RECIPES (OPT-03, OPT-04).
+#
+# Every per-map cache used to be keyed on the WHOLE add-on (recipe()), so a
+# change to a button rewrote ~400 MB of ground packets per map, threw away the
+# texture read-ahead order and rebuilt the splat. Each family now hashes only
+# what produces it: the reader scripts (as reader_recipe does) plus its own
+# producer files, plus a VERSION to bump when code elsewhere - usually
+# highpoly_gamesource.gd - changes what the family contains.
+#
+#   texture_order  which textures a map asks for, in order. A stale order only
+#                  lowers the read-ahead hit rate; it never changes what is drawn.
+#   env            the native ground packets (bf6_environment.gd + the core).
+#   heightfield    the native height_game.r16 read back on open (OPT-05).
+#   splat          the ground colour map / layer pages and the near window.
+#   textures       the per-map decoded texture pack (OPT-02).
+const FAMILIES := {
+	"texture_order": {"version": 1, "files": []},
+	"env": {"version": 1, "files": ["bf6_environment.gd", "bin/bf6_core.dll"]},
+	"heightfield": {"version": 1, "files": ["bf6_environment.gd", "bin/bf6_core.dll"]},
+	"splat": {"version": 1, "files": ["bf6_splat.gd", "bf6_terrain.gd", "bf6_terrainlayers.gd",
+		"bf6_texture.gd", "bin/bf6_core.dll"]},
+	"textures": {"version": 1, "files": ["bf6_texture.gd", "highpoly_bctex.gd", "bin/bf6_core.dll",
+		"bin/bf6_oodle.windows.x86_64.dll"]},
+}
+static var _family_recipes: Dictionary = {}
+
+# "" when the family is unknown or a producer file is missing: no key means no
+# cache, never a key shared with something else.
+static func family_recipe_for_root(base: String, family: String) -> String:
+	if not FAMILIES.has(family):
+		return ""
+	var spec: Dictionary = FAMILIES[family]
+	var parts := PackedStringArray(["family-recipe-v1", family, "v%d" % int(spec["version"])])
+	for name in READER_FILES + (spec["files"] as Array):
+		var hash := FileAccess.get_sha256(base.path_join(str(name)))
+		if hash.is_empty():
+			return ""
+		parts.append(str(name) + ":" + hash)
+	return "\n".join(parts).sha256_text()
+
+static func family_recipe(family: String) -> String:
+	_lock.lock()
+	var known := str(_family_recipes.get(family, ""))
+	_lock.unlock()
+	if not known.is_empty():
+		return known
+	var computed := family_recipe_for_root("res://addons/highpoly_toggle", family)
+	if not computed.is_empty():
+		_lock.lock()
+		_family_recipes[family] = computed
+		_lock.unlock()
+	return computed
+
+# The install identity plus the family recipe: what a per-map cache folder or
+# meta file is keyed on. 64 hex characters, like key().
+static func family_key(path: String, family: String) -> String:
+	if bypass:
+		return ""
+	var result := current(path)
+	var code := family_recipe(family)
+	return (str(result.get("identity", "")) + ":" + code).sha256_text() if result.get("ok", false) and not code.is_empty() else ""
+
 static func read_record(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {}
