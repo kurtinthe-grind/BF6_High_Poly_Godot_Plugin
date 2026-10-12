@@ -1815,7 +1815,9 @@ All of it is read from your own Battlefield 6 installation."
 		# sidecar-cached meshes load with the shader params they were SAVED
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
+		var _t_bf := Time.get_ticks_msec()
 		if _sr != null: mapctx.apply_shader_prefs(_sr)
+		var _ms_prefs := Time.get_ticks_msec() - _t_bf
 		# AND THE VARIANT ROW, which could not have been filled before now.
 		#
 		# It lists the layers the map's own placements carry, and it was only
@@ -1823,8 +1825,15 @@ All of it is read from your own Battlefield 6 installation."
 		# when the map data is still empty. So it found no layers, hid itself,
 		# and nothing ever asked again: the dropdown never appeared even once
 		# the props were on screen and their layers were known.
+		_t_bf = Time.get_ticks_msec()
 		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
-		_swap_placed_after_build())
+		var _ms_var := Time.get_ticks_msec() - _t_bf
+		_t_bf = Time.get_ticks_msec()
+		_swap_placed_after_build()
+		# OPT-12: the post-build main-thread work, measured. The swap pass is
+		# async, so this is only its synchronous start.
+		Log.info("after build: shader prefs %d ms, variant row %d ms, swap start %d ms"
+			% [_ms_prefs, _ms_var, Time.get_ticks_msec() - _t_bf]))
 	# the map build gets its own bar
 	mapctx.job_queue = jobs        # map-context downloads take their turn
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
@@ -3409,11 +3418,20 @@ func _check_scene_change() -> void:
 	_edited_root = r
 	if is_instance_valid(_preparation):
 		_preparation.refresh_status()
+	# TIMED, CALL BY CALL (OPT-07, measure first). A scene switch froze the
+	# editor for 5.6-30.6 s in the logs, and part of that is Godot instancing the
+	# incoming scene. These lines say how much is the plugin's teardown, so the
+	# fix (hide now, free in slices) can be aimed at the call that costs.
+	var _sw: Array = []
+	var _t_sw := Time.get_ticks_msec()
 	if old != null and is_instance_valid(old):
 		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
+		_sw.append("map context %d ms" % (Time.get_ticks_msec() - _t_sw)); _t_sw = Time.get_ticks_msec()
 		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
+		_sw.append("collision %d ms" % (Time.get_ticks_msec() - _t_sw)); _t_sw = Time.get_ticks_msec()
 		HighpolyLib.restore(old)                              # overlays off, SDK proxies back
+		_sw.append("restore overlays %d ms" % (Time.get_ticks_msec() - _t_sw)); _t_sw = Time.get_ticks_msec()
 	# reset the dock to default for the newly-active scene (programmatic, no rebuild)
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
 	_refresh_gates()      # the new scene starts on the rung that downloads nothing
@@ -3449,9 +3467,13 @@ func _check_scene_change() -> void:
 	# downstream of a check that already rejected the call. A user's editor log
 	# showed exactly that, three times in a row, on a scene swap.
 	var alive: Node = old if (old != null and is_instance_valid(old)) else null
+	_t_sw = Time.get_ticks_msec()
 	ShapeViz.release(alive)
 	PlacedCull.release(alive)  # a saved property: don't leave it on a closed scene
 	SdkHide.restore_all(alive)
+	_sw.append("outline/cull/SDK-hide walks %d ms" % (Time.get_ticks_msec() - _t_sw))
+	if old != null:
+		Log.info("scene switch teardown: " + ", ".join(PackedStringArray(_sw)))
 	# The one thing that SHOULD carry across a swap: the pieces you placed in the
 	# newly-active scene start culled to wherever the Range slider currently sits.
 	# The cull was released from the outgoing scene but never applied to the
