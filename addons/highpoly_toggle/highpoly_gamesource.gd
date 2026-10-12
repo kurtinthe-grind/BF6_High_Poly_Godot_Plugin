@@ -1974,10 +1974,13 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 		# game patch recomposites and anything else is a file read. This row is
 		# where "every open pays 30 s" used to hide.
 		var _hm_cached := bool(hm.get("from_cache", false))
+		var _hm_mem := bool(hm.get("from_memory", false))
 		note_phase("ground: heightfield", Time.get_ticks_msec() - t,
 			int(hm.get("res", 0)), "samples per side",
-			FROM_CACHE if _hm_cached else FROM_INSTALL,
+			FROM_CACHE if _hm_cached else (FROM_MEMORY if _hm_mem else FROM_INSTALL),
 			"read back from height_game.r16" if _hm_cached
+				else "already read by the open" if _hm_mem
+				else "decoded by the core and written for next time" if bool(hm.get("native", false))
 				else "composited from the streaming tree and written for next "
 					+ "time; paint %.1fs over %s texels into a %s grid (%.1fx "
 					% [float(_hm_paint_us) / 1e6, _grouped_i(_hm_texels),
@@ -2091,6 +2094,62 @@ static func _terrain_key(res: PackedByteArray) -> String:
 	return "%d:%d:%d+h3" % [n, hash(head), hash(tail)]
 
 
+# ---------------------------------------------------------------------------
+# THE NATIVE HEIGHTFIELD, READ BACK (OPT-05).
+#
+# The native path decoded the heightfield in the core and wrote
+# height_game.r16 on EVERY open - 537 MB on Isolated, ~4 s - and never read it
+# back; only the script path had a key check. The file now carries a meta
+# (height_native.json) with the heightfield family key and its exact byte
+# length, and a matching, whole file is read instead of decoded and rewritten.
+# A different key, a short file or unreadable meta is a miss, never an error.
+const NATIVE_HF_FILE := "height_game.r16"
+const NATIVE_HF_META := "height_native.json"
+
+static func read_native_heightfield(cache_dir: String, key: String) -> Dictionary:
+	if key.is_empty():
+		return {}
+	var meta_path := cache_dir.path_join(NATIVE_HF_META)
+	var r16_path := cache_dir.path_join(NATIVE_HF_FILE)
+	if not FileAccess.file_exists(meta_path) or not FileAccess.file_exists(r16_path):
+		return {}
+	var mv: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
+	if not (mv is Dictionary) or str((mv as Dictionary).get("key", "")) != key:
+		return {}
+	var md := mv as Dictionary
+	var want := int(md.get("bytes", -1))
+	var f := FileAccess.open(r16_path, FileAccess.READ)
+	if f == null or want <= 0 or int(f.get_length()) != want or int(md.get("res", 0)) <= 0:
+		return {}
+	var bytes := f.get_buffer(want)
+	f.close()
+	if bytes.size() != want:
+		return {}
+	return {"bytes": bytes, "meta": md}
+
+static func write_native_heightfield(cache_dir: String, key: String, heights: PackedByteArray,
+		meta: Dictionary) -> bool:
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	var r16_path := cache_dir.path_join(NATIVE_HF_FILE)
+	var staged := "%s.%d.part" % [r16_path, OS.get_process_id()]
+	var file := FileAccess.open(staged, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_buffer(heights)
+	file.close()
+	DirAccess.remove_absolute(cache_dir.path_join(NATIVE_HF_META))   # never pair new bytes with old meta
+	if DirAccess.rename_absolute(staged, r16_path) != OK:
+		DirAccess.remove_absolute(staged)
+		return false
+	if key.is_empty():
+		return true                    # written for the scene builder, just not reusable
+	var md := meta.duplicate()
+	md["key"] = key
+	md["bytes"] = heights.size()
+	md["v"] = 1
+	return preload("highpoly_install_cache.gd").write_record(cache_dir.path_join(NATIVE_HF_META), md)
+
+
 func terrain(cache_dir: String) -> Dictionary:
 	if src == null:
 		return {}
@@ -2101,6 +2160,27 @@ func terrain(cache_dir: String) -> Dictionary:
 			# map_data's main-thread re-ask must not decode/write/scan it again.
 			if not _hm.is_empty() and (_hm.get("data", PackedByteArray()) as PackedByteArray).is_empty():
 				_hm["data"] = FileAccess.get_file_as_bytes(cache_dir.path_join("height_game.r16"))
+			var again := _native_terrain_meta.duplicate()
+			again["from_cache"] = false
+			again["from_memory"] = true
+			return again
+		var hf_key: String = preload("highpoly_install_cache.gd").family_key(src.game, "heightfield")
+		var _t_hf := Time.get_ticks_msec()
+		var back := read_native_heightfield(cache_dir, hf_key)
+		if not back.is_empty():
+			var md: Dictionary = back["meta"]
+			var side_c := int(md.get("res", 0))
+			_hm = {"data": back["bytes"], "res": side_c, "min": float(md.get("world_min", 0.0)),
+				"max": float(md.get("world_max", 0.0)), "min_z": float(md.get("world_min_z", 0.0)),
+				"max_z": float(md.get("world_max_z", 0.0)), "base": 0.0, "scale": float(md.get("scale", 0.0))}
+			_build_tile_steps()
+			_native_terrain_meta = {"file": NATIVE_HF_FILE, "res": side_c, "world_min": float(md.get("world_min", 0.0)),
+				"world_max": float(md.get("world_max", 0.0)), "world_min_z": float(md.get("world_min_z", 0.0)),
+				"world_max_z": float(md.get("world_max_z", 0.0)), "base": 0.0, "scale": float(md.get("scale", 0.0)),
+				"native": true, "from_cache": true}
+			_native_terrain_directory = cache_dir
+			_say("native terrain: heightfield %dx%d read back from the cache in %d ms (no decode, no rewrite)"
+				% [side_c, side_c, Time.get_ticks_msec() - _t_hf])
 			return _native_terrain_meta
 		var grid: Dictionary = env.read_terrain()
 		if bool(grid.get("present", false)):
@@ -2109,22 +2189,23 @@ func terrain(cache_dir: String) -> Dictionary:
 			var scale := float(grid.height_scale) * (65535.0 / 65536.0)
 			if scale <= 0.0: scale = maxf(0.001, float(grid.world_max[1]) - float(grid.world_min[1]))
 			var side := int(grid.width)
-			var path := cache_dir.path_join("height_game.r16")
-			DirAccess.make_dir_recursive_absolute(cache_dir)
-			var file := FileAccess.open(path, FileAccess.WRITE)
-			if file == null:
+			var hf_meta := {"res": side, "world_min": float(grid.world_min[0]),
+				"world_max": float(grid.world_max[0]), "world_min_z": float(grid.world_min[2]),
+				"world_max_z": float(grid.world_max[2]), "scale": scale}
+			if not write_native_heightfield(cache_dir, hf_key, grid.heights, hf_meta):
 				_say("native terrain: cannot write heightfield for the scene builder")
 				return {}
-			file.store_buffer(grid.heights)
-			file.close()
 			_hm = {"data": grid.heights, "res": side, "min": float(grid.world_min[0]),
 				"max": float(grid.world_max[0]), "min_z": float(grid.world_min[2]),
 				"max_z": float(grid.world_max[2]), "base": 0.0, "scale": scale}
 			_build_tile_steps()
-			_native_terrain_meta = {"file": "height_game.r16", "res": side, "world_min": float(grid.world_min[0]),
+			_native_terrain_meta = {"file": NATIVE_HF_FILE, "res": side, "world_min": float(grid.world_min[0]),
 				"world_max": float(grid.world_max[0]), "world_min_z": float(grid.world_min[2]),
-				"world_max_z": float(grid.world_max[2]), "base": 0.0, "scale": scale, "native": true}
+				"world_max_z": float(grid.world_max[2]), "base": 0.0, "scale": scale, "native": true,
+				"from_cache": false}
 			_native_terrain_directory = cache_dir
+			_say("native terrain: heightfield %dx%d decoded and written in %d ms (cache miss%s)"
+				% [side, side, Time.get_ticks_msec() - _t_hf, "" if not hf_key.is_empty() else ", no key"])
 			return _native_terrain_meta
 	var pick := ""
 	# Snapshot: walking the live member races the catalogue republish.
