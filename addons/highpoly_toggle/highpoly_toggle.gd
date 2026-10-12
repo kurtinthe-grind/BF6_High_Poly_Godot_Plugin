@@ -1297,6 +1297,33 @@ All of it is read from your own Battlefield 6 installation."
 		lbl.text = "Opened %s" % dir)
 	host.add_child(_centred(files_btn))
 
+	var sweep_btn := Button.new()
+	sweep_btn.text = "Remove outdated caches"
+	sweep_btn.tooltip_text = "Deletes index files that a newer copy has replaced, and temp logs left by sessions that ended badly. The newest copy of every cache is kept; anything removed is rebuilt if it is ever needed again."
+	sweep_btn.pressed.connect(func():
+		var names := HighpolyCacheSweep.outdated(HighpolyCacheSweep.scan(),
+			int(Time.get_unix_time_from_system()))
+		if names.is_empty():
+			lbl.text = "No outdated caches."
+			return
+		var dlg := ConfirmationDialog.new()
+		dlg.dialog_text = "Delete %d outdated cache file(s)?
+
+%s" % [names.size(),
+			"
+".join(Array(names).slice(0, 12)) + ("
+…" if names.size() > 12 else "")]
+		dlg.confirmed.connect(func():
+			var freed := HighpolyCacheSweep.remove(names)
+			lbl.text = "Removed %d file(s), %s freed." % [names.size(), _human_size(freed)]
+			Log.info(lbl.text)
+			_refresh_storage()
+			dlg.queue_free())
+		dlg.canceled.connect(func(): dlg.queue_free())
+		EditorInterface.get_base_control().add_child(dlg)
+		dlg.popup_centered())
+	host.add_child(_centred(sweep_btn))
+
 	# Settings that used to live in this row and no longer need to be decisions:
 	#
 	#   "Faster loading" only ever chose whether to KEEP the work, and switching
