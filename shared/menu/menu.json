@@ -37,8 +37,7 @@
           "id": "detail_toggles",
           "layout": "chips",
           "controls": [
-            "preview_selected",
-            "prop_lighting"
+            "preview_selected"
           ]
         },
         {
@@ -84,7 +83,7 @@
     {
       "id": "map_context",
       "title": "Map Context",
-      "description": "Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.",
+      "description": "Build inside the real level instead of an empty grey box: the ground, the skyline and the buildings the real place has. All of it is preview only: none of it is saved into your map or exported.",
       "open": false,
       "groups": [
         {
@@ -95,21 +94,8 @@
             "backdrops",
             "grass",
             "objects",
-            "fx",
-            "lighting",
-            "fixture_lights",
-            "roads"
-          ]
-        },
-        {
-          "id": "lighting_options",
-          "layout": "chips",
-          "controls": [
-            "contact_shading",
-            "shadows",
-            "interior_light",
             "ground_photo",
-            "map_lights"
+            "roads"
           ]
         },
         {
@@ -178,14 +164,6 @@
         "unreal"
       ],
       "dynamic_label": true
-    },
-    "prop_lighting": {
-      "label": "Prop Lighting",
-      "tip": "Preview the lights and illuminated surfaces carried by your placed props.",
-      "kind": "toggle",
-      "engines": [
-        "godot"
-      ]
     },
     "retry_skipped": {
       "label": "Retry skipped",
@@ -276,30 +254,6 @@
         "unreal"
       ]
     },
-    "fx": {
-      "label": "FX",
-      "tip": "Show the level effects, including smoke and distant effect cards.",
-      "kind": "toggle",
-      "engines": [
-        "godot"
-      ]
-    },
-    "lighting": {
-      "label": "Lighting",
-      "tip": "Preview the level's game lighting.",
-      "kind": "toggle",
-      "engines": [
-        "godot"
-      ]
-    },
-    "fixture_lights": {
-      "label": "Map and prop lights",
-      "tip": "Preview fixture lights in the original map and placed props.",
-      "kind": "toggle",
-      "engines": [
-        "unreal"
-      ]
-    },
     "roads": {
       "label": "Roads",
       "tip": "Show road and ground decal layers.",
@@ -308,42 +262,10 @@
         "unreal"
       ]
     },
-    "contact_shading": {
-      "label": "Contact shading",
-      "tip": "Darken the creases where surfaces meet. Costs rendering time.",
-      "kind": "toggle",
-      "engines": [
-        "godot"
-      ]
-    },
-    "shadows": {
-      "label": "Shadows",
-      "tip": "Show shadows cast by the sun. Costs rendering time.",
-      "kind": "toggle",
-      "engines": [
-        "godot"
-      ]
-    },
-    "interior_light": {
-      "label": "Interior light",
-      "tip": "Adjust ambient light in areas sheltered from the sky.",
-      "kind": "slider",
-      "engines": [
-        "godot"
-      ]
-    },
     "ground_photo": {
       "label": "Ground photo",
       "tip": "Adjust the strength of the level's aerial color raster on the terrain.",
       "kind": "slider",
-      "engines": [
-        "godot"
-      ]
-    },
-    "map_lights": {
-      "label": "Map lights",
-      "tip": "Show nearby street lights, signs and indoor fixtures from the original level.",
-      "kind": "toggle",
       "engines": [
         "godot"
       ]
@@ -359,7 +281,7 @@
     },
     "configure_shaders": {
       "label": "Configure Shaders…",
-      "tip": "Adjust water, smoke and grass animation settings.",
+      "tip": "Adjust grass animation settings.",
       "kind": "action",
       "engines": [
         "godot"

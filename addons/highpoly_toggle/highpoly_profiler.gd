@@ -27,9 +27,6 @@ const Log = preload("highpoly_log.gd")
 const OWNERS := {
 	"_SCATTER": "grass scatter",
 	"_MAP_CONTEXT": "map context (scenery)",
-	"_MAP_FX": "effects",
-	"_MAP_LIGHTS": "map lights",
-	"_GAME_LIGHTING": "game lighting",
 	"_WATER_CHUNKS": "water",
 	"_COLLISION_VIS": "collision overlay",
 	"_GAMEMODE": "gamemode markers",

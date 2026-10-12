@@ -11,10 +11,6 @@ class_name HighpolyLib
 # swaps them in automatically as they land. `use_legacy` keeps the exact 1.4
 # res://highpoly behavior alive for installs that haven't migrated yet.
 
-# The one place a Light3D is built, shared with the level's own lights so a
-# placed lamp and a level lamp cannot disagree about energy, cone or aim.
-const LightScript = preload("highpoly_lighting.gd")
-
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
 # Render layer 19: "this geometry already has its real textures". Shared with the
@@ -394,26 +390,6 @@ static func _instance_for(key: String, id: String) -> Node3D:
 			return null
 		var gkey := id.trim_prefix("game://")
 		var gnode: Node3D = game_source.object_node(gkey)
-		# THE FIXTURES INSIDE THE PREFAB, not only its meshes.
-		#
-		# A lamp used to arrive with its geometry and none of its lighting, which
-		# is a stranger result than it sounds: the bulb is there, lit by nothing,
-		# so the prop reads as broken rather than as unlit. The records come from
-		# the same walk and the same builder the level's own lights use, so a
-		# placed lamp and a level lamp are the same fixture.
-		#
-		# Capped inside attach_prop_lights: Forward+ stops at 512 clustered
-		# lights in view, and a lined street would pass that without the builder
-		# doing anything unreasonable.
-		# NOT ATTACHED HERE ANY MORE. The fixtures hang off a scene-level holder
-		# so they stay out of the prop's selection box, which means the call needs
-		# the PROXY node - and this function only has the assembled geometry. The
-		# records ride along on the node and apply_one, which does know the proxy,
-		# places them.
-		if gnode != null and game_source.has_method("object_lights"):
-			var recs: Array = game_source.object_lights(gkey)
-			if not recs.is_empty():
-				gnode.set_meta("hp_light_recs", recs)
 		return gnode
 	var res = load(id)
 	if res is PackedScene:
@@ -564,10 +540,6 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)
 		child.owner = null                   # editor-only: not saved, not exported
-		# The fixtures this prop carries, placed OUTSIDE it so its selection box
-		# stays the size of its geometry. See HighpolyLighting.attach_prop_lights.
-		if child.has_meta("hp_light_recs"):
-			LightScript.attach_prop_lights(node, child.get_meta("hp_light_recs"))
 		# variants skip the fitter: they are published pre-aligned to the base
 		# model's frame, and destroyed/partial variants LEGITIMATELY disagree
 		# with the proxy AABB (the fitter would wrongly veto them)
@@ -581,18 +553,29 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 	_set_proxy_visible(node, false)
 	return true
 
+# THE SHADOW RULE for everything the plugin draws over the scene, read by the
+# placed overlays here and by the map context's props (highpoly_mapcontext,
+# _build_mmi and the cell shadow pass). It used to live with the game-lighting
+# rig and follow its Shadows checkbox; the fork removed both (F-08), so this is
+# the default that checkbox shipped with: big things cast under the editor's
+# own preview sun, litter does not. Not set by the panel; a test may change it.
+static var cast_shadows := true
+# The atlas cost is per CASTER, not per square metre, so a bottle books the same
+# slot as a tower and returns a few pixels for it. A car is ~4.5 m and a
+# building far more; both clear this, a crate lid does not.
+static var shadow_min_size := 1.5
+
 # WHAT AN OVERLAY WAS LAST DRESSED WITH. Everything _set_textured decides comes
 # from these three values, so an overlay already dressed under the same three
 # needs nothing - and skipping it is what makes a repeat swap pass (after a
 # save, a mode flip, a selection override) cost a lookup per prop instead of a
 # walk of every mesh in every overlay.
 static func dress_key(textured: bool) -> String:
-	return "%s|%s|%s" % [textured, HighpolyLighting.cast_shadows,
-		HighpolyLighting.shadow_min_size]
+	return "%s|%s|%s" % [textured, cast_shadows, shadow_min_size]
 
 static func _set_textured(hp: Node, textured: bool) -> void:
-	# Overlays follow the dock's Shadows sub-checkbox, exactly as map-context
-	# props already do (highpoly_mapcontext, _build_mmi).
+	# Overlays follow the same shadow rule as map-context props
+	# (cast_shadows above; highpoly_mapcontext, _build_mmi).
 	#
 	# They used to have no shadow handling at all, so every one defaulted to
 	# casting. That cost nothing while Low-Poly drew no overlays. Once Low-Poly
@@ -610,16 +593,16 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 	# crate lid does not. Measured on the overlay's own bounds, so no per-asset
 	# list has to be kept and a new model classifies itself the moment it loads.
 	#
-	# The distance half is HighpolyLighting.shadow_radius, which Godot enforces by
-	# culling casters outside the shadow range at no cost to us.
+	# The distance half is the shadow range of whichever sun is drawing; Godot
+	# culls casters outside it at no cost to us.
 	var key := dress_key(textured)
 	if str(hp.get_meta("hp_dress", "")) == key:
 		return
 	var shadow: int = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	if HighpolyLighting.cast_shadows:
+	if cast_shadows:
 		var ab := _merged_aabb(hp, "")
 		var longest := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
-		if longest >= HighpolyLighting.shadow_min_size:
+		if longest >= shadow_min_size:
 			shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	var stack: Array = [hp]
 	while not stack.is_empty():

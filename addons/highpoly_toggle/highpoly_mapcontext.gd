@@ -39,13 +39,6 @@ var _show_backdrop := false        # distant skyline / out-of-bounds vista layer
 # Roads and paths are part of the ground now, not a layer, so they start
 # visible and stay visible unless something explicitly hides them.
 var _show_roads := true
-# Set by the dock from its own toggles, because the light and FX layers are
-# switched independently of apply() and this object cannot see those buttons.
-# Default TRUE so a caller that never sets them gets exactly the old behaviour:
-# skipping work is opt-in, and a layer that quietly had no data would be a much
-# worse bug than mining data nobody asked for.
-var want_lights := true
-var want_fx := true
 # The Grass chip. OFF by default: the clutter had drawn nothing for months, so
 # for most users its arrival would read as a change nobody asked for - and it
 # costs instances. The chip makes it a choice, like Roads.
@@ -638,9 +631,6 @@ var _ctx_tex_mode := -1             # last apply(): detail mode (set_context_sho
 # The jpg is still fetched and still used — by the vegetation scatter, which
 # reads its greenness to decide where grass belongs — so _tile_params,
 # _maptile_tex and ensure_maptile all stay.
-#
-# distant flipbook cards (smoke columns / haze planes) follow the FX switch
-static var show_fx_cards := false
 
 func reset_props_verification() -> void:
 	# called when the sync manager adopts a NEW manifest (models changed)
@@ -1917,12 +1907,10 @@ func _load_data(map: String) -> bool:
 		# That is a file derived from the player's own game, not a download.
 		# The drape must sample the same lattice this context meshes the
 		# terrain on, or the roads sit on a surface nobody draws.
-		# ONLY WHAT THE LAYERS THAT ARE ON NEED. Mining lights and FX for
-		# an apply that draws none of them was 64 s of a 74 s terrain-only apply
-		# in a user's log. Anything skipped is mined the moment its layer is
-		# switched on, so this costs nothing later.
+		# ONLY WHAT THE LAYERS THAT ARE ON NEED. The decal volumes are mined
+		# only with the objects layer; anything skipped is mined the moment its
+		# layer is switched on, so this costs nothing later.
 		_data = game_source.map_data("%s/%s" % [CACHE, map], {
-			"lights": want_lights, "fx": want_fx,
 			"edv": _show_objects,
 		})
 		# AFTER map_data, not before: the stride is derived from the terrain
@@ -2075,13 +2063,12 @@ func set_variant_layers(mode: String) -> String:
 
 # The distant flipbook cards â€” the big camera-facing planes the level uses for
 # smoke columns and haze. They arrive as ordinary props (the baker tags their
-# material "__fxanim3" and _fx_animate_materials swaps it to fx_smoke.gdshader),
-# so nothing gated them: they came in with "Original map objects" and, being
-# hundreds of metres across and drawn near the skyline, they sit in front of the
-# surroundings you actually wanted to look at.
+# material "__fxanim3"), so nothing gated them: they came in with "Original map
+# objects" and, being hundreds of metres across and drawn near the skyline, they
+# sit in front of the surroundings you actually wanted to look at.
 #
-# They are an EFFECT, not scenery, so they belong to the FX switch. Routed into
-# their own group under Props whose visibility follows it.
+# They are an EFFECT, not scenery. They used to follow the FX switch, which was
+# off by default; the fork removed FX (F-08), so the builders skip them.
 static func _is_fx_card(m: Mesh, asset_name := "") -> bool:
 	# Name first: the material tag is not reliable on its own. Measured on
 	# Dumbo, the level carries 4 of these sheets over 23 placements, and only
@@ -2096,60 +2083,10 @@ static func _is_fx_card(m: Mesh, asset_name := "") -> bool:
 	var am := m as ArrayMesh
 	for i in range(am.get_surface_count()):
 		var mat := am.surface_get_material(i)
-		# post-swap: already a ShaderMaterial running the flipbook shader
-		if mat is ShaderMaterial:
-			var sh: Shader = (mat as ShaderMaterial).shader
-			if sh != null and String(sh.resource_path).ends_with("fx_smoke.gdshader"):
-				return true
-		# pre-swap (or a sidecar baked before the swap existed): the baker's tag
-		elif mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
+		# the baker's tag
+		if mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
 			return true
 	return false
-
-
-func _fx_cards_group(props_root: Node3D) -> Node3D:
-	var g := props_root.get_node_or_null("FXCards")
-	if g != null:
-		return g as Node3D
-	var n := Node3D.new()
-	n.name = "FXCards"
-	props_root.add_child(n)
-	n.owner = null
-	n.visible = show_fx_cards
-	return n
-
-
-# Flip the flipbook cards without rebuilding. Returns false when no card layer
-# exists yet, so the caller can decide whether a rebuild is warranted.
-func set_fx_cards_shown(root: Node, on: bool) -> bool:
-	show_fx_cards = on
-	var gs := _fx_card_groups(root)
-	if gs.is_empty():
-		return false
-	for g in gs:
-		(g as Node3D).visible = on
-	return true
-
-
-# Every FXCards group under the overlay, wherever it was parented. Both the
-# props and the backdrop builders can create one, because which layer a level
-# files its smoke sheets under is the level's choice, not ours.
-func _fx_card_groups(root: Node) -> Array:
-	var out: Array = []
-	if root == null:
-		return out
-	var ctx := root.get_node_or_null(NODE)
-	if ctx == null:
-		return out
-	var stack: Array = [ctx]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			if c.name == "FXCards":
-				out.append(c)
-			else:
-				stack.append(c)
-	return out
 
 
 func _variant_group(props_root: Node3D, key: String) -> Node3D:
@@ -2746,12 +2683,11 @@ func _finish_prop(gp: String, baked: String, out: Array,
 	for m in out:
 		if m == null:
 			continue
-		_fx_animate_materials(m)
 		_wind_swap_materials(m)
 		_parallax_materials(m)
 		_terrainblend_materials(m)
 		# AFTER the material passes, so anything that swaps a material in (wind,
-		# parallax, fx) has its textures compressed too, and BEFORE the sidecar
+		# parallax) has its textures compressed too, and BEFORE the sidecar
 		# is written below so the saving is baked into the cache rather than
 		# re-paid on every load.
 		var _tc := Time.get_ticks_msec()
@@ -2851,34 +2787,11 @@ func _write_sidecar(gp: String, baked: String, done: Array) -> void:
 
 # ---------- Configure Shaders (dock dialog) ----------
 # live-tunable overlay shader prefs, persisted by the dock:
-#   flip     â€“ multiplier on flipbook-card animation speed (smoke; 0 = static)
 #   wind     â€“ subtle foliage sway on leaf-card materials
-static var shader_prefs := {"flip": 1.0, "wind": false, "wind_str": 0.08}
-const FLIP_BASE_SPEED := 0.25          # fx_smoke.gdshader authored default
+static var shader_prefs := {"wind": false, "wind_str": 0.08}
 
-# Backdrop-FX flipbook cards (smoke plumes): the baker tags materials whose
-# sheet packs 3 animation-time samples in R/G/B with "__fxanim3" and keeps the
-# packed data. Swap those for fx_smoke.gdshader, which crossfades the channels
-# live â€” the smoke billows in the editor using the game's own texture data.
-static var _fx_smoke_shader: Shader = null
 static var _wind_shader: Shader = null
 const WIND_MAT_PAT := "leaf|leaves|frond|foliage|grass|weed|plant|fern|bush"
-
-static func _fx_animate_materials(m: Mesh) -> void:
-	if not (m is ArrayMesh): return
-	var am := m as ArrayMesh
-	for i in range(am.get_surface_count()):
-		var mat := am.surface_get_material(i)
-		if mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
-			if _fx_smoke_shader == null:
-				_fx_smoke_shader = load((HighpolyMapContext as Script)
-						.resource_path.get_base_dir() + "/fx_smoke.gdshader")
-			if _fx_smoke_shader == null: return
-			var sm := ShaderMaterial.new()
-			sm.shader = _fx_smoke_shader
-			sm.set_shader_parameter("packed_tex", (mat as BaseMaterial3D).albedo_texture)
-			sm.set_shader_parameter("speed", FLIP_BASE_SPEED * float(shader_prefs.get("flip", 1.0)))
-			am.surface_set_material(i, sm)
 
 # Foliage Wind: swap leaf-card materials (name matches WIND_MAT_PAT AND the
 # material is alpha-cutout â€” trunks/bark stay put) for foliage_wind.gdshader.
@@ -3073,17 +2986,16 @@ static func _wind_swap_materials(m: Mesh) -> void:
 		sm.set_shader_parameter("specular_amount", bm.metallic_specular)
 		am.surface_set_material(i, sm)
 
-# push the current shader_prefs onto every live overlay material (flipbook
-# cards, foliage) â€” called by the dock's Configure Shaders dialog and
+# push the current shader_prefs onto every live overlay material (foliage)
+# â€” called by the dock's Configure Shaders dialog and
 # after builds finish (sidecar-cached meshes carry the params they were saved
 # with). Walk is cheap: materials only, no geometry.
 func apply_shader_prefs(root: Node) -> String:
 	var ctx := root.get_node_or_null(NODE) if root != null else null
 	if ctx == null: return "Map Context off"
-	var counts := {"flip": 0, "wind": 0}
+	var counts := {"wind": 0}
 	_prefs_walk(ctx, counts)
-	return "Shaders: %d flipbook, %d foliage material(s) updated" % [
-		counts["flip"], counts["wind"]]
+	return "Shaders: %d foliage material(s) updated" % counts["wind"]
 
 func _prefs_walk(n: Node, counts: Dictionary) -> void:
 	if n is GeometryInstance3D:
@@ -3111,10 +3023,7 @@ func _prefs_mat(mat: Material, counts: Dictionary) -> void:
 	var sm := mat as ShaderMaterial
 	if sm.shader == null: return
 	var sp := String(sm.shader.resource_path)
-	if sp.ends_with("/fx_smoke.gdshader"):
-		sm.set_shader_parameter("speed", FLIP_BASE_SPEED * float(shader_prefs.get("flip", 1.0)))
-		counts["flip"] += 1
-	elif sp.ends_with("/foliage_wind.gdshader"):
+	if sp.ends_with("/foliage_wind.gdshader"):
 		sm.set_shader_parameter("wind_strength",
 				float(shader_prefs.get("wind_str", 0.08)) if bool(shader_prefs.get("wind", false)) else 0.0)
 		counts["wind"] += 1
@@ -3590,7 +3499,6 @@ func _merge_meshes_inner(pairs: Array) -> Array:
 #                          untangented vista wall warns on every draw call.
 #   _wind_swap_materials() REPLACES alpha-cutout leaf materials matching
 #                          WIND_MAT_PAT with foliage_wind.gdshader.
-#   _fx flipbook swap      REPLACES "__fxanim3" materials with fx_smoke.gdshader.
 #
 # A ShaderMaterial is assumed to want tangents: we cannot introspect a shader's
 # varyings from GDScript, and generating them is cheap next to a per-draw-call
@@ -3648,7 +3556,7 @@ static func _wants_tangents(mat: Variant) -> bool:
 	if bm.normal_texture != null or bm.heightmap_enabled:
 		return true
 	var nm := String(bm.resource_name)
-	if nm.contains("__vtrparallax") or nm.contains("__fxanim3"):
+	if nm.contains("__vtrparallax"):
 		return true
 	# foliage wind only swaps alpha-cutout, textured, name-matched materials
 	if bm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED \
@@ -3821,16 +3729,13 @@ func _no_backdrop_shadow(g: GeometryInstance3D) -> void:
 
 # "This node must never cast, whatever any toggle says."
 #
-# Setting cast_shadow = OFF at build time is not enough on its own: the Shadows
-# checkbox walks the whole overlay and re-derives casting from the mesh's extent
-# (HighpolyLighting._set_shadows), and the skyline is 500+ m across, so it sails
-# past any size rule and switches straight back on. That is exactly what
-# happened â€” a measured pass came back with 6,627 of 6,632 backdrop surfaces
-# casting again, 26,508 draw calls, after the build had correctly turned them
-# off. The terrain went with it.
-#
-# So the intent has to live ON THE NODE where every later pass can see it,
-# rather than in a flag that the next walk overwrites.
+# Setting cast_shadow = OFF at build time was not enough on its own while a
+# Shadows checkbox walked the whole overlay and re-derived casting from the
+# mesh's extent: the skyline is 500+ m across, so it sailed past any size rule
+# and switched straight back on (a measured pass came back with 6,627 of 6,632
+# backdrop surfaces casting again). That checkbox is gone (fork F-08), but the
+# merge pass below still re-derives casting, so the intent lives ON THE NODE
+# where every later pass can see it.
 static func mark_never_casts(g: GeometryInstance3D) -> void:
 	if g == null:
 		return
@@ -4513,13 +4418,11 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			var bm := _mesh_for(str(e["model"]))
 			if bm != null:
 				meshes = [bm]
-		if meshes.size() > 0 and is_instance_valid(bd_root):
-			var mesh: Mesh = meshes[0]
-			# a smoke sheet filed under the backdrop layer follows the FX switch
-			# too, wherever the level chose to put it
+		# a smoke sheet filed under the backdrop layer is an effect too, wherever
+		# the level chose to put it, and is not drawn (see _is_fx_card)
+		if meshes.size() > 0 and is_instance_valid(bd_root) \
+				and not _is_fx_card(meshes[0], str(e.get("name", e.get("mesh", "")))):
 			var bdest: Node3D = bd_root
-			if _is_fx_card(mesh, str(e.get("name", e.get("mesh", "")))):
-				bdest = _fx_cards_group(bd_root)
 			# orange, not green: the skyline is made of the level's own
 			# buildings, so untextured it should match the map objects in front
 			# of it rather than the ground under it
@@ -4766,14 +4669,14 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# even when the parse failed, so a file that lands later refreshes in)
 			if not _prop_by_src.has(gp): _prop_by_src[gp] = []
 			(_prop_by_src[gp] as Array).append(e)
+		# flipbook cards are an effect, not scenery, and are not drawn
+		if mesh != null and _is_fx_card(mesh, str(e.get("mesh", ""))):
+			mesh = null
 		if mesh != null:
 			var _t1 := Time.get_ticks_msec()
 			var xf: Array = e.get("xf", [])
 			var em: Dictionary = _prop_layers.get(str(e.get("mesh", "")), {})
-			# flipbook cards are an effect, not scenery â€” own group, FX switch
 			var dest: Node3D = props_root
-			if _is_fx_card(mesh, str(e.get("mesh", ""))):
-				dest = _fx_cards_group(props_root)
 			# THE SUBWORLD THIS GROUP CAME FROM, when the reader supplied one.
 			#
 			# Groups are keyed by (mesh, scope, variation), so every instance in
@@ -4782,7 +4685,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# to carry, and available without the miner that produced it.
 			#
 			# "" means always on and keeps the entry in the base group.
-			elif str(e.get("layer", "")) != "":
+			if str(e.get("layer", "")) != "":
 				dest = _variant_group(props_root, str(e["layer"]))
 			if em.is_empty():
 				# every mesh of a split prop, or the split drops what the
@@ -6293,8 +6196,8 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material,
 	mmi.set_meta("lod_sz", _sz)     # so the Range slider can re-derive these live
 	# props/backdrop CAST shadows (the flat no-shadow overlay was an old
 	# study-mode perf choice â€” with game lighting it read as "shadows don't
-	# render"). Follows the dock's Shadows sub-checkbox so meshes built while
-	# it's unchecked stay light. Grass scatter is always shadow-off (GPU cost).
+	# render"). Follows HighpolyLib.cast_shadows, the one shadow rule placed
+	# overlays use too. Grass scatter is always shadow-off (GPU cost).
 	#
 	# SIZE-AWARE, because shadows were the largest single cost measured. A
 	# casting surface is redrawn once per directional cascade, so its real price
@@ -6308,7 +6211,7 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material,
 	# boundary the HLOD tiers and the placed-object cull already use, so there is
 	# one notion of "big enough to matter" rather than three.
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
-		if (HighpolyLighting.cast_shadows and _sz >= SHADOW_MIN_EXTENT) \
+		if (HighpolyLib.cast_shadows and _sz >= SHADOW_MIN_EXTENT) \
 		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# VISIBILITY RANGES (Godot's per-instance HLOD): small props stop being
 	# drawn long before the Range slider would cull their cell â€” the single
@@ -7362,7 +7265,7 @@ func _apply_radius(budget: int = 1 << 30, only_new := false) -> void:
 		# lights on, whole-map casting was THE lag). 350 m covers everything
 		# a shadow is visible on at street scale.
 		var casts: bool = near and dist <= 350.0 + half_diag \
-			and HighpolyLighting.cast_shadows
+			and HighpolyLib.cast_shadows
 		# Read the cell's INTENDED shadow state, not lst[0]'s actual one. The
 		# two are no longer the same thing: _build_mmi() only lets a mesh cast
 		# if it is at least SHADOW_MIN_EXTENT across, so a cell whose first

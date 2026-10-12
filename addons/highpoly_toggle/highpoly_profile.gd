@@ -133,8 +133,8 @@ static func reset() -> void:
 # what the scope object would have given, which is surviving an early return.
 
 # Open a bucket. Name it after WHAT THE CODE DOES, not after the function: the
-# report is read by someone deciding what to switch off, and "map light culling"
-# tells them that where "tick_lights" does not.
+# report is read by someone deciding what to switch off, and "prop cell culling"
+# tells them that where "tick" does not.
 static func begin(name: String) -> void:
 	if not enabled:
 		return

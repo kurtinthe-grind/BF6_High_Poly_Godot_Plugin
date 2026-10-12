@@ -121,7 +121,7 @@ func _run() -> void:
 			_status("Recording texture order")
 			gs.record_textures = true
 			gs.prepare_geometry_only = false
-			var tdata: Dictionary = gs.map_data("", {"objects": true, "lights": false, "fx": false, "edv": false, "sky": false})
+			var tdata: Dictionary = gs.map_data("", {"objects": true, "edv": false})
 			var tprops: Array = tdata.get("props", []).duplicate()
 			tprops.append_array(tdata.get("backdrop", []))
 			var seen := {}
@@ -144,7 +144,7 @@ func _run() -> void:
 			Source.save_texture_order(level, gs.texture_requests)
 		_finish("prepared", "")
 		return
-	var data: Dictionary = gs.map_data("", {"objects": true, "lights": false, "fx": false, "edv": false, "sky": false})
+	var data: Dictionary = gs.map_data("", {"objects": true, "edv": false})
 	var props: Array = data.get("props", []).duplicate()
 	props.append_array(data.get("backdrop", []))
 	if props.is_empty() or str(gs._geom_dir).is_empty():

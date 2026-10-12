@@ -36,23 +36,6 @@ var _override: Array = []      # nodes currently carrying the override
 # re-read: _mode_changed used to ask for the list again and always got nothing.
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
-# WRITTEN ONCE because it is applied from two places. The chip sets it when the
-# panel is built and# change, and the second copy had drifted into a different voice entirely
-# ("Project the map-tile colour over the SDK terrain + assets") — so the plain
-# wording was replaced by jargon the moment anyone opened a scene, which is to
-# say almost nobody ever saw it.
-
-const LIGHTING_TIP := "Lights your map the way the real one is lit, with the \
-same sun angle, sun colour, sky and haze. Replaces the editor's plain preview \
-light while it is on."
-
-# A GREYED-OUT CONTROL HAS TO SAY WHY, on the control itself. The reason this
-# one is unavailable was only ever written into the status line by the click
-# handler — which cannot run, because the chip is disabled. So the explanation
-# existed and was unreachable at exactly the moment it was needed, and the map
-# simply had a Lighting button that could not be pressed and never said why.
-const LIGHTING_TIP_NONE := "This map has no lighting data yet, so there is \
-nothing to switch on. Everything else in this panel still works."
 
 const BJournal = preload("highpoly_journal.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
@@ -69,18 +52,11 @@ var _preparation: VBoxContainer
 var _preparation_restore_float := false
 var _preparation_viewports: Array = []
 const HighpolyVariants = preload("highpoly_variants.gd")
-const LightingScript = preload("highpoly_lighting.gd")
-const GameSourceScript = preload("highpoly_gamesource.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
 const JobsScript = preload("highpoly_jobs.gd")
 const SdkHide = preload("highpoly_sdkhide.gd")
 
-# Progress-bar lane names. Kept together because the bar is keyed by string:
-# opening a lane under one spelling and closing it under another leaves a bar
-# stuck on screen for the rest of the session.
-const FX_JOB := "Placing the level's effects"
-const LIGHTS_JOB := "Placing the level's lights"
 const ShapeViz = preload("highpoly_shapeviz.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
@@ -127,14 +103,6 @@ const UNFOCUS_PARK := "user://highpoly/unfocused_parked.json"
 const UNFOCUS_DRAW_USEC := 16000        # ~60 fps unfocused, not flat out
 const UNFOCUS_DEFAULT := 100000         # Godot's own, ~10 fps
 var unfocus_btn: Button
-var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
-var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
-var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
-var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
-var mapctx_maplights: Button # sub-toggle: the map's mined light entities
-var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
-var mapctx_fill: HSlider             # ambient held back from sky visibility, 0-60%
-var mapctx_fill_val: Label
 var mapctx_photo_row: HBoxContainer  # "Ground photo" slider row (always shown)
 var mapctx_photo: HSlider            # colour-map strength on the extended ground, 0-100%
 var mapctx_photo_val: Label
@@ -547,27 +515,18 @@ func _perf_state() -> Dictionary:
 		"map_context": chip.call(mapctx_on),
 		"objects": chip.call(mapctx_objects),
 		"backdrop": chip.call(mapctx_backdrop),
-		"fx": chip.call(mapctx_fx),
-		"lighting": chip.call(mapctx_light),
-		"contact_shading": chip.call(mapctx_gi),
-		"shadows": chip.call(mapctx_shadows),
-		"map_lights": chip.call(mapctx_maplights),
 	}
 
 func _shed_map_context() -> int:
 	var r := EditorInterface.get_edited_scene_root()
 	var shed := 0
-	for c in [mapctx_on, mapctx_objects, mapctx_backdrop,
-			mapctx_fx, mapctx_light]:
+	for c in [mapctx_on, mapctx_objects, mapctx_backdrop]:
 		if c != null and (c as Button).button_pressed:
 			(c as Button).set_pressed_no_signal(false)
 			shed += 1
 	if mapctx_variant != null: mapctx_variant.select(0)
 	if mapctx_variant_row != null: mapctx_variant_row.visible = false
-	_lighting_subs_enabled(false)   # the lighting sub-toggles go unavailable
 	if r != null:
-		HighpolyFx.clear(r)
-		LightingScript.clear(r)
 		mapctx.apply(r, false, false, MODE_SDK)
 		# and hand the SDK its own stand-ins back — the layers that were on had
 		# hidden them to take their place
@@ -727,7 +686,7 @@ func _enter_tree() -> void:
 	dock.add_child(read_panel)
 
 	# The master control. It switches the borrowed scenery on and off and sets
-	# the draw distance for the scenery, the effects, the map lights and your
+	# the draw distance for the scenery and your
 	# own placed pieces — so it belongs at the top, not inside one section.
 	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
@@ -762,15 +721,8 @@ func _enter_tree() -> void:
 		# mesh instead of thousands of pieces. Fed the slider VALUE, not _rad -
 		# the top notch sets _rad to 1e9 and half of that would merge nothing.
 		mapctx.set_merge_from_range(v)
-		# lights + FX ride the same slider: lights capped at 300 m (the
-		# clustered-lighting GPU budget), FX clamped to their class ranges
 		var _rr := EditorInterface.get_edited_scene_root()
-		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
-		# the light cull now skips a stationary camera, so a range change has to
-		# say so or dragging the slider while standing still would do nothing
-		LightingScript.invalidate_light_cull()
 		if _rr != null:
-			HighpolyFx.set_range(_rr, _rad)
 			if mapctx_optimize and mapctx_optimize.button_pressed:
 				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
 		# The slider is a VIEW DISTANCE control, nothing more. It used to double
@@ -798,7 +750,7 @@ func _enter_tree() -> void:
 		mode_btn.add_item(Modes.label(id), id)
 	mode_btn.tooltip_text = "Low-Poly (what you export): only what the SDK ships.
 
-Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, skyline, lighting and the level's own objects.
+Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, skyline and the level's own objects.
 
 High-Poly: your pieces are swapped for the real game models too, in clay or with their real textures.
 
@@ -886,12 +838,9 @@ All of it is read from your own Battlefield 6 installation."
 	col_alpha.editable = false
 
 	host = _section("map_context", "Map Context",
-		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.")
+		"Build inside the real level instead of an empty grey box: the ground, the skyline and the buildings the real place has. All of it is preview only: none of it is saved into your map or exported.")
 
 	var mc_chips := _chip_row(host)
-	# sub-toggles of "Lighting", indented under the main row and only
-	# visible while it is on
-	var mc_sub := _chip_row(host, 14)
 	mapctx_on = Theme_.chip("Extended Terrain")
 	mapctx_on.tooltip_text = "Adds the real ground that surrounds the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
@@ -913,27 +862,6 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_on)
-
-	# PROP LIGHTING: the fixtures a placed prop brought in from the game, and the
-	# glow on its own bulb. Both come from the level - the lights are the ones the
-	# prefab carries and the glow is its emissive sheet - and this only decides
-	# whether they are switched on. Off, a lamp is a lamp that is not turned on,
-	# which is the honest default while laying out geometry.
-	prop_light_on = Theme_.chip("Prop Lighting")
-	prop_light_on.tooltip_text = "Switches on the lights a placed prop carries in the game, and makes its bulbs, screens and lit signs glow. Both come from the level's own data. Preview only: nothing is saved into your map or exported."
-	prop_light_on.button_pressed = false
-	prop_light_on.toggled.connect(func(v: bool):
-		if _locked(prop_light_on): return
-		_set_prop_lighting(v))
-	# UNDER DETAIL MODE, not with the map-context layers.
-	#
-	# It reads as a map-context switch because it was next to them, but it is not
-	# one: every other chip in that row decides whether a LAYER OF THE MAP exists
-	# - the ground, the skyline, the sea, the level's own props. This one decides
-	# how the pieces YOU placed are lit, which is the same question Detail Mode
-	# answers for how they are modelled and textured. It works with no map
-	# context at all.
-	_detail_chips.add_child(prop_light_on)
 
 	# The distant skyline is its own layer: it is what you see PAST the edge of
 	# the play area, and wanting the horizon is a different question from wanting
@@ -1064,92 +992,6 @@ All of it is read from your own Battlefield 6 installation."
 	# we hide theirs instead, because our terrain already carries the same
 	# photo inside its shader. See highpoly_mapcontext._set_sdk_decal_shown.
 
-	mapctx_fx = Theme_.chip("FX")
-	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. That includes the big distant smoke and haze cards near the skyline, which are effects rather than scenery. They are off by default, because they are hundreds of metres across and sit in front of the surroundings."
-	mapctx_fx.toggled.connect(func(v: bool):
-		if _locked(mapctx_fx): return
-		var _r := EditorInterface.get_edited_scene_root()
-		# Same as the map lights: the build skips mining FX emitters when this
-		# layer is off, so switching it on is where they get mined - on a
-		# worker, or the first press freezes the editor for the whole mine
-		# with nothing on screen saying why (task #75).
-		if v and mapctx != null:
-			mapctx.want_fx = true
-			await _ensure_mapdata_async(mapctx.game_source, {"fx": true})
-			mapctx.ensure_section("fx")
-		# the level's flipbook cards are drawn as props, so they follow this
-		# switch too rather than arriving unbidden with the map objects
-		mapctx.set_fx_cards_shown(_r, v)
-		lbl.text = await HighpolyFx.apply(_r, mapctx.map_of(_r), v, _lane(FX_JOB),
-			mapctx.game_source)
-		_save_mapctx_state())
-	mc_chips.add_child(mapctx_fx)
-
-	mapctx_light = Theme_.chip("Lighting")
-	mapctx_light.tooltip_text = LIGHTING_TIP
-	mapctx_light.toggled.connect(func(v: bool):
-		if _locked(mapctx_light): return
-		_lighting_subs_enabled(v)
-		_lighting_changed()
-		_save_mapctx_state())
-	mc_chips.add_child(mapctx_light)
-
-	# sub-toggles: only shown while Game lighting is on; both act LIVE on the
-	# injected rig/overlay (no rebuild) and are remembered per map
-	# Was "Soft shading", and it switched on Godot's real-time global
-	# illumination as well as contact shading. The GI half made the view WORSE
-	# than leaving the chip off — the game bakes its GI offline and our scene is
-	# a runtime overlay spread over kilometres, which is the case that technique
-	# handles worst. It now toggles only the contact darkening the game itself
-	# has, so the label says that instead of promising bounced light.
-	mapctx_gi = Theme_.chip("Contact shading")
-	mapctx_gi.button_pressed = true
-	mapctx_gi.disabled = true
-	mapctx_gi.tooltip_text = "Darkens the creases where surfaces meet: under vehicles, inside doorways, along kerbs. This is the same contact shading the game uses, at the radius the map itself specifies. Costs some frame rate; switch it off if the view gets choppy."
-	mapctx_gi.toggled.connect(func(v: bool):
-		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_gi)
-
-	mapctx_shadows = Theme_.chip("Shadows")
-	mapctx_shadows.button_pressed = true
-	mapctx_shadows.disabled = true
-	mapctx_shadows.tooltip_text = "Shadows cast by the sun. Costs frame rate. Switch it off if the view gets choppy."
-	mapctx_shadows.toggled.connect(func(v: bool):
-		lbl.text = LightingScript.set_shadows(EditorInterface.get_edited_scene_root(), v)
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_shadows)
-
-	# Interior light: how much ambient stops depending on seeing sky. Sits with
-	# Shadows because that is the pairing people reach for — the complaint it
-	# answers is "the shadowed side is pure black", and shadows are what put it
-	# there. Shown only alongside the shadow controls, hidden with them.
-	mapctx_fill_row = HBoxContainer.new()
-	var fill_lbl := Label.new(); fill_lbl.text = "Interior light"
-	mapctx_fill_row.add_child(fill_lbl)
-	mapctx_fill = HSlider.new()
-	mapctx_fill.editable = false        # Lighting starts off; greyed, not hidden
-	mapctx_fill.min_value = 0; mapctx_fill.max_value = 60
-	mapctx_fill.step = 1; mapctx_fill.value = int(round(LightingScript.interior_fill * 100.0))
-	# An HSlider's minimum width is ZERO, and this row lives in an
-	# HFlowContainer, which sizes children to their minimum. SIZE_EXPAND_FILL
-	# means nothing there, so the bar collapsed to no width at all: the label and
-	# the "22%" rendered, the draggable part did not exist. Give it a real width.
-	mapctx_fill.custom_minimum_size = Vector2(150, 0)
-	mapctx_fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_fill.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	mapctx_fill.tooltip_text = "Lifts the darkest areas, such as inside buildings, under bridges and the shadowed side of a wall, so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. Preview only: it changes nothing about your map."
-	mapctx_fill_row.add_child(mapctx_fill)
-	mapctx_fill_val = Label.new()
-	mapctx_fill_val.text = "%d%%" % int(mapctx_fill.value)
-	mapctx_fill_row.add_child(mapctx_fill_val)
-	mapctx_fill.value_changed.connect(func(v: float):
-		mapctx_fill_val.text = "%d%%" % int(v)
-		lbl.text = LightingScript.set_interior_fill(
-			EditorInterface.get_edited_scene_root(), v / 100.0)
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_fill_row)
-
 	# Ground photo: how strongly the game's own terrain colour raster steers
 	# the extended ground. It is real game data - the engine modulates every
 	# terrain material by it - but on a dense city map it reads like a
@@ -1179,37 +1021,7 @@ All of it is read from your own Battlefield 6 installation."
 		if mapctx != null:
 			lbl.text = mapctx.set_colormap_strength(v / 100.0)
 		_save_mapctx_state())
-	mc_sub.add_child(mapctx_photo_row)
-
-	# (A pair of sun-position sliders lived here while the azimuth convention was
-	# being worked out against the running game. They did their job — SunRotationX
-	# turned out to be a compass bearing, see sun_dir() — and came straight back
-	# out. The sun is read from each level's own data with nothing to adjust.)
-
-	mapctx_maplights = Theme_.chip("Map lights")
-	mapctx_maplights.button_pressed = false
-	mapctx_maplights.disabled = true
-	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has, several thousand of them on some maps. Only the ones near your camera light up. Costs frame rate."
-	mapctx_maplights.toggled.connect(func(v: bool):
-		var _r := EditorInterface.get_edited_scene_root()
-		# The build only mines the light entities when this layer is on, so
-		# switching it on is the moment to make sure they exist. set_map_lights
-		# reads the file map_data writes and never asks map_data for it, so
-		# without this the layer would come on to nothing.
-		# ON A WORKER FIRST. ensure_section is a synchronous map_data ask, and
-		# a first mine of a section is main-thread freeze territory (task #75:
-		# "64 s of a 74 s terrain-only apply" in a user's log). After the worker
-		# has mined it, ensure_section is a dictionary lookup.
-		if v and mapctx != null:
-			mapctx.want_lights = true
-			await _ensure_mapdata_async(mapctx.game_source, {"lights": true})
-			mapctx.ensure_section("lights")
-		lbl.text = await LightingScript.set_map_lights(_r,
-				v and mapctx_light.button_pressed, mapctx.map_of(_r),
-				_lane(LIGHTS_JOB))
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_maplights)
-
+	mc_chips.add_child(mapctx_photo_row)
 
 	# Optimize placed objects: distance-cull the props the USER places (their custom
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
@@ -1237,8 +1049,8 @@ All of it is read from your own Battlefield 6 installation."
 	# plugin download", and that is worth being able to read at a glance.
 	#
 	# Deliberately NOT gated: the Range slider (a view distance, it loads
-	# nothing), the lighting sub-toggles (they only exist while Lighting is on,
-	# which is gated), and the collision overlays (drawn from the scene itself).
+	# nothing), the Ground photo slider (a shader strength, it loads nothing)
+	# and the collision overlays (drawn from the scene itself).
 	_gate(mapctx_on, "The extended terrain")
 	_gate(mapctx_backdrop, "The distant skyline")
 	# Roads and Grass ride the extended terrain, so they are gated with it.
@@ -1248,13 +1060,11 @@ All of it is read from your own Battlefield 6 installation."
 	_gate(mapctx_roads, "The roads and paths")
 	_gate(mapctx_grass, "The ground clutter")
 	_gate(mapctx_objects, "The level's own objects")
-	_gate(mapctx_fx, "The level's effects")
-	_gate(mapctx_light, "The game lighting")
 	_gate(mapctx_variant, "The game mode layouts")
 
 	var shader_btn := Button.new()
 	shader_btn.text = "Configure Shaders…"
-	shader_btn.tooltip_text = "Settings for the moving parts: drifting smoke and swaying grass."
+	shader_btn.tooltip_text = "Settings for the moving parts: swaying grass."
 	shader_btn.pressed.connect(_open_shader_dialog)
 	host.add_child(_centred(shader_btn))
 
@@ -1341,8 +1151,12 @@ All of it is read from your own Battlefield 6 installation."
 	var _es := EditorInterface.get_editor_settings()
 	var _sp: Variant = _es.get_project_metadata("highpoly_mapctx", "_shaders", {})
 	if _sp is Dictionary:
+		# Only the keys the dialog still has. A save from an older build can
+		# carry ones that are gone (the smoke-card flipbook speed), and copying
+		# those back would only write them out again on the next save.
 		for k in (_sp as Dictionary):
-			HighpolyMapContext.shader_prefs[k] = _sp[k]
+			if HighpolyMapContext.shader_prefs.has(k):
+				HighpolyMapContext.shader_prefs[k] = _sp[k]
 
 	# The game folder moved to the TOP of the panel. It is the precondition
 	# for everything the plugin does, not a storage setting, and two places to
@@ -1780,7 +1594,6 @@ All of it is read from your own Battlefield 6 installation."
 		"collision_color": {"root": cc_row, "container": cc_row},
 		"collision_alpha": {"root": ca_row, "container": ca_row},
 		"map_layers": {"root": mc_chips, "container": mc_chips},
-		"lighting_options": {"root": mc_sub.get_parent(), "container": mc_sub},
 		"map_variant": {"root": mapctx_variant_row, "container": mapctx_variant_row},
 		"map_actions": {"root": shader_btn, "container": shader_btn},
 		"storage_native": {"root": _menu_sections.storage.content, "container": _menu_sections.storage.content},
@@ -1791,7 +1604,6 @@ All of it is read from your own Battlefield 6 installation."
 		"no_cull": SharedMenu.binding(mapctx_nocull),
 		"detail_mode": SharedMenu.binding(mode_btn),
 		"preview_selected": SharedMenu.binding(ovr_chk),
-		"prop_lighting": SharedMenu.binding(prop_light_on),
 		"collisions": SharedMenu.binding(col_chk),
 		"isolate_selected": SharedMenu.binding(iso_chk),
 		"shape_outlines": SharedMenu.binding(shape_chk),
@@ -1801,13 +1613,7 @@ All of it is read from your own Battlefield 6 installation."
 		"backdrops": SharedMenu.binding(mapctx_backdrop),
 		"grass": SharedMenu.binding(mapctx_grass),
 		"objects": SharedMenu.binding(mapctx_objects),
-		"fx": SharedMenu.binding(mapctx_fx),
-		"lighting": SharedMenu.binding(mapctx_light),
-		"contact_shading": SharedMenu.binding(mapctx_gi),
-		"shadows": SharedMenu.binding(mapctx_shadows),
-		"interior_light": SharedMenu.binding(mapctx_fill, mapctx_fill_row, fill_lbl),
 		"ground_photo": SharedMenu.binding(mapctx_photo, mapctx_photo_row, ph_lbl),
-		"map_lights": SharedMenu.binding(mapctx_maplights),
 		"variant": SharedMenu.binding(mapctx_variant, mapctx_variant_row, mv_lbl),
 		"configure_shaders": SharedMenu.binding(shader_btn),
 	}
@@ -2056,9 +1862,6 @@ All of it is read from your own Battlefield 6 installation."
 		HighpolyProfile.begin("panel: scene change check")
 		_check_scene_change()
 		HighpolyProfile.end("panel: scene change check")
-		HighpolyProfile.begin("panel: lighting guard")
-		_lighting_guard()
-		HighpolyProfile.end("panel: lighting guard")
 		if mapctx:
 			HighpolyProfile.begin("prop cell culling")
 			var _t_ctx := Time.get_ticks_msec()
@@ -2066,33 +1869,9 @@ All of it is read from your own Battlefield 6 installation."
 			HighpolyProfiler.span("panel tick: prop cell culling",
 				Time.get_ticks_msec() - _t_ctx)
 			HighpolyProfile.end("prop cell culling")
-		# map-lights culling: only lights near the editor camera render
 		var _vp3 := EditorInterface.get_editor_viewport_3d(0)
 		var _cam3 := _vp3.get_camera_3d() if _vp3 else null
 		if _cam3:
-			var _r3 := EditorInterface.get_edited_scene_root()
-			HighpolyProfile.begin("map light culling")
-			var _t_lt := Time.get_ticks_msec()
-			LightingScript.tick_lights(_r3, _cam3.global_position)
-			HighpolyProfiler.span("panel tick: map-light culling",
-				Time.get_ticks_msec() - _t_lt)
-			HighpolyProfile.end("map light culling")
-			# A placed fixture's lights hang off a scene-level holder so they do
-			# not inflate the prop's selection box, so something has to carry
-			# them when the builder moves the prop. A few matrix multiplies per
-			# tracked fixture, capped at 8 per prop, and dead rows drop out.
-			HighpolyProfile.begin("prop light follow")
-			LightingScript.refresh_prop_lights()
-			HighpolyProfile.end("prop light follow")
-			# Local lighting zones follow the camera the way the game follows the
-			# player: entering an interior blends its exposure in, leaving blends
-			# it out. Costs an AABB test per zone (59 across the whole fleet, and
-			# most maps have none), so it is not worth gating.
-			if mapctx_light != null and mapctx_light.button_pressed:
-				HighpolyProfile.begin("lighting zone blend")
-				LightingScript.tick_zones(_r3, _cam3.global_position,
-						LightingScript.base_ev())
-				HighpolyProfile.end("lighting zone blend")
 			HighpolyProfile.begin("collision outline tidy")
 			ShapeViz.tick()      # tidy up any outline the editor rebuilt
 			HighpolyProfile.end("collision outline tidy")
@@ -2442,11 +2221,6 @@ func _settings_snapshot() -> PackedStringArray:
 	out.append("%-22s %s" % ["roads and paths",
 		("ON (with the ground)" if mapctx != null and mapctx._show_roads
 		else "off")])
-	out.append("%-22s %s" % ["fx", yn.call(mapctx_fx)])
-	out.append("%-22s %s" % ["lighting", yn.call(mapctx_light)])
-	out.append("%-22s %s" % ["  sdfgi + ssao", yn.call(mapctx_gi)])
-	out.append("%-22s %s" % ["  sun shadows", yn.call(mapctx_shadows)])
-	out.append("%-22s %s" % ["  map lights", yn.call(mapctx_maplights)])
 	out.append("%-22s %s" % ["cull placed objects", yn.call(mapctx_optimize)])
 	out.append("%-22s %s" % ["collision overlay", yn.call(col_chk)])
 	if mapctx_range != null:
@@ -2539,7 +2313,6 @@ func _exit_tree() -> void:
 		PlacedCull.release(r)
 		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
-		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.restore(r)                             # overlays off, SDK proxies back
 	Log.hook(Callable())         # never call into a freed panel
 	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
@@ -2765,7 +2538,6 @@ func _capture_ui() -> Dictionary:
 		"chips": chips,
 		"mode": mode_btn.get_selected_id() if mode_btn != null else -1,
 		"range": mapctx_range.value if mapctx_range != null else -1.0,
-		"fill": mapctx_fill.value if mapctx_fill != null else -1.0,
 		"photo": mapctx_photo.value if mapctx_photo != null else -1.0,
 		"variant": mapctx_variant.selected if mapctx_variant != null else -1,
 		"scroll": dock_scroll.scroll_vertical if dock_scroll != null else 0,
@@ -2787,10 +2559,6 @@ func _apply_ui(d: Dictionary) -> void:
 	if mapctx_range != null and rg >= 0.0:
 		mapctx_range.set_value_no_signal(rg)
 		if mapctx_range_val: mapctx_range_val.text = _range_label(rg)
-	var fl := float(d.get("fill", -1.0))
-	if mapctx_fill != null and fl >= 0.0:
-		mapctx_fill.set_value_no_signal(fl)
-		if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fl)
 	var pv := float(d.get("photo", -1.0))
 	if mapctx_photo != null and pv >= 0.0:
 		mapctx_photo.set_value_no_signal(pv)
@@ -2800,12 +2568,7 @@ func _apply_ui(d: Dictionary) -> void:
 	var vi := int(d.get("variant", -1))
 	if mapctx_variant != null and vi >= 0 and vi < mapctx_variant.item_count:
 		mapctx_variant.select(vi)
-	# The statics the chips only MIRROR have to be told too, because nothing
-	# fired a handler to tell them.
-	if mapctx_fx != null:
-		MapContextScript.show_fx_cards = mapctx_fx.button_pressed
 	_refresh_gates()
-	_lighting_subs_enabled(mapctx_light != null and mapctx_light.button_pressed)
 	# The window is a child of the editor, not of the dock, so a reopen closes it
 	# and the launcher button comes back untoggled. Put it back where it was.
 	if bool(d.get("open", false)) and win != null:
@@ -2833,8 +2596,6 @@ func _ui_chips() -> Array:
 	return [
 		["on", mapctx_on], ["objects", mapctx_objects],
 		["backdrop", mapctx_backdrop],
-		["fx", mapctx_fx], ["light", mapctx_light], ["gi", mapctx_gi],
-		["shadows", mapctx_shadows], ["maplights", mapctx_maplights],
 		["optimize", mapctx_optimize], ["col", col_chk], ["shape", shape_chk],
 		["iso", iso_chk], ["ovr", ovr_chk], ["pick", diag_pick],
 	]
@@ -3790,18 +3551,14 @@ func _do_reset() -> void:
 			mapctx.game_source.release_caches()
 		mapctx.game_source = null
 	LibScript.game_source = null
-	LightingScript.game_source = null
 	HighpolyVitals.set_cache_probe(Callable())
 
 	# --- panel back to defaults ---
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
 	_refresh_gates()      # back on the rung that downloads nothing: grey them again
-	for b in [mapctx_on, mapctx_objects, mapctx_fx, mapctx_light, col_chk,
-			iso_chk, ovr_chk]:
+	for b in [mapctx_on, mapctx_objects, col_chk, iso_chk, ovr_chk]:
 		if b: b.set_pressed_no_signal(false)
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
-	MapContextScript.show_fx_cards = false
-	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if ovr_chk: ovr_chk.text = _override_label()
 	_override.clear()
@@ -3862,8 +3619,6 @@ func _check_scene_change() -> void:
 	_edited_root = r
 	if old != null and is_instance_valid(old):
 		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
-		LightingScript.clear(old)                           # frees _GAME_LIGHTING + _MAP_LIGHTS
-		HighpolyFx.clear(old)                               # frees _MAP_FX particles
 		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
 		HighpolyLib.restore(old)                              # overlays off, SDK proxies back
@@ -3882,11 +3637,6 @@ func _check_scene_change() -> void:
 	if mapctx_roads:
 		mapctx_roads.set_pressed_no_signal(false)
 		if mapctx: mapctx.set_roads_shown(null, false)
-	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
-	if mapctx_fx:
-		mapctx_fx.set_pressed_no_signal(false)
-		MapContextScript.show_fx_cards = false   # keep the card layer in step
-	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if col_chk: col_chk.set_pressed_no_signal(false)
 	if iso_chk:
@@ -3962,24 +3712,6 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	Log.info("Map context apply returned: %s" % (_res if _res != "" else "<empty>"))
 	lbl.text = _res
 
-# Contact shading, Shadows, Map lights and Interior light: the four options that
-# only mean anything while Lighting is on.
-#
-# GREYED, NOT HIDDEN. They used to disappear, and a row that disappears drags
-# every row beneath it upwards — so switching Lighting moved the rest of the
-# panel under the user's cursor, and the next click could land on a control they
-# were not aiming at. Greyed, they stay put and simply stop responding, and the
-# panel keeps the same shape whatever is switched on.
-#
-# ONE FUNCTION because there were EIGHT places setting these four controls, and
-# they had already drifted: two of them forgot Map lights entirely, so it stayed
-# clickable after Lighting went off.
-func _lighting_subs_enabled(on: bool) -> void:
-	if mapctx_gi: mapctx_gi.disabled = not on
-	if mapctx_shadows: mapctx_shadows.disabled = not on
-	if mapctx_maplights: mapctx_maplights.disabled = not on
-	if mapctx_fill: mapctx_fill.editable = on
-
 
 # Is anything that draws the MAP switched on?
 #
@@ -3991,19 +3723,15 @@ func _wants_map_layers() -> bool:
 	# itself is deliberately NOT in this list: the ground is the streaming
 	# tree, the palette and the colour map, and its texture names resolve
 	# through the partition catalogue that build_catalog makes regardless -
-	# the walk's 38k rows feed props, skyline, lights and FX, none of which
-	# terrain reads. The master chip used to be the last line here, which
+	# the walk's 38k rows feed props and skyline, neither of which terrain
+	# reads. The master chip used to be the last line here, which
 	# made switching terrain on pay the ~50 s cold walk for data nothing
 	# consumed (found by asking exactly that of the build journal). A layer
 	# turned on later still gets its rows: every consumer runs
 	# _ensure_placements_async first.
 	if mapctx_objects != null and mapctx_objects.button_pressed:
 		return true
-	if mapctx_backdrop != null and mapctx_backdrop.button_pressed:
-		return true
-	if mapctx_light != null and mapctx_light.button_pressed:
-		return true
-	return mapctx_fx != null and mapctx_fx.button_pressed
+	return mapctx_backdrop != null and mapctx_backdrop.button_pressed
 
 
 # Walk the level's placements if a map layer needs them and the open skipped it.
@@ -4081,10 +3809,6 @@ func _mapctx_rebuild() -> void:
 	if not mapctx_on.button_pressed: return
 	var r := EditorInterface.get_edited_scene_root()
 	if mapctx.map_of(r) == "": return
-	# Which optional map data to mine. The light and FX layers have their own
-	# buttons and apply() never saw them, so every apply mined 3,874 light
-	# entities and 701 FX emitters whether or not anything would draw them.
-	_mapctx_sync_wants()
 	lbl.text = await _apply_with_placements(r, true, mapctx_objects.button_pressed,
 		_mapctx_tex_mode(),
 		mapctx_backdrop != null and mapctx_backdrop.button_pressed)
@@ -4134,13 +3858,10 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool) -> Str
 	# map_data on the MAIN thread, and the first ask decodes the heightfield,
 	# drapes the roads and mines any wanted section - the 35-44 s freezes the
 	# stall table blamed on "idle" (task #91). Mining it here on a worker turns
-	# apply's own call into a dictionary return. The want dict must be the one
-	# apply will pass, or apply's ask still lazily fills the difference on the
-	# main thread - which is why the wants are synced first.
+	# apply's own call into a dictionary return. The decal volumes are left to
+	# apply, which asks for them only when the objects layer is on.
 	if (on or objs or bd) and mapctx != null and mapctx.game_source != null:
-		_mapctx_sync_wants()
-		await _ensure_mapdata_async(mapctx.game_source,
-			{"lights": mapctx.want_lights, "fx": mapctx.want_fx})
+		await _ensure_mapdata_async(mapctx.game_source, {"edv": false})
 	return mapctx.apply(r, on, objs, tex, bd)
 
 
@@ -4256,66 +3977,6 @@ func _ensure_mapdata_async(gs, want: Dictionary) -> void:
 	_read_worker_busy = false
 
 
-
-# The dock owns these two buttons; the map context cannot see them. Kept in one
-# place so a new caller cannot forget half of it.
-func _mapctx_sync_wants() -> void:
-	if mapctx == null:
-		return
-	mapctx.want_lights = mapctx_maplights != null and mapctx_maplights.button_pressed
-	mapctx.want_fx = mapctx_fx != null and mapctx_fx.button_pressed
-
-# "Game lighting": inject/remove the real map sun+sky+fog (highpoly_lighting.gd).
-# Independent of the Map Context download (no map data needed — compiled-in table).
-func _lighting_changed() -> void:
-	var r := EditorInterface.get_edited_scene_root()
-	var map: String = mapctx.map_of(r)
-	if not mapctx_light.button_pressed:
-		LightingScript.clear(r)
-		lbl.text = "Game lighting off"
-		return
-	# Lighting no longer has a compiled per-map table to fall back to. If this is
-	# the first live layer the user switches on, open the game's reader here so
-	# the checkbox does not depend on Extended Terrain having run first.
-	if map != "" and (LightingScript.game_source == null \
-			or str(LightingScript.game_source.level) != map.to_lower()):
-		lbl.text = "Reading %s lighting from the Battlefield 6 install..." % map
-		await _ensure_game_source(map)
-	if map == "" or not LightingScript.has_data(map):
-		mapctx_light.set_pressed_no_signal(false)
-		_lighting_subs_enabled(false)
-		lbl.text = "No lighting data for this scene" if map != "" else "Open an MP_… level scene first"
-		return
-	lbl.text = LightingScript.apply(r, map,
-			mapctx_gi.button_pressed if mapctx_gi else true,
-			mapctx_shadows.button_pressed if mapctx_shadows else true)
-	if mapctx_maplights and mapctx_maplights.button_pressed:
-		lbl.text += " | " + await LightingScript.set_map_lights(r, true, map,
-			_lane(LIGHTS_JOB))
-
-# grey the checkbox out when the open scene has no lighting data (called from
-# the dock's 0.5 s timer — cheap: one dictionary lookup)
-func _lighting_guard() -> void:
-	# Video memory used to ride along with the Lighting sub-controls, which meant
-	# it was INVISIBLE until somebody switched Lighting on. It is a scenery
-	# setting, nothing to do with lighting, and it is the one control the
-	# out-of-memory warning tells people to change — so it was pointing them at
-	# something they could not see. It is simply always there now.
-	if mapctx_light == null: return
-	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
-	var source_ready := LightingScript.game_source != null \
-		and str(LightingScript.game_source.level) == map.to_lower()
-	var ok := map != "" and (LightingScript.has_data(map) \
-		or (not source_ready and HighpolyGameSource.available()))
-	if mapctx_light.disabled == (not ok): return
-	mapctx_light.disabled = not ok
-	# Say so ON THE CHIP. The status-line message for this lives in the click
-	# handler, which a disabled chip never reaches.
-	mapctx_light.tooltip_text = LIGHTING_TIP if ok else LIGHTING_TIP_NONE
-	if not ok and mapctx_light.button_pressed:
-		mapctx_light.set_pressed_no_signal(false)
-		_lighting_subs_enabled(false)
-
 # one-time baked-in performance settings: multi-threaded rendering (zero
 # visual impact) + 2048 shadow atlas (negligible under the soft overcast sun).
 # Applied ONCE per project — a user who reverts a setting is respected.
@@ -4363,7 +4024,7 @@ func _auto_perf_settings() -> void:
 		banner.visible = true
 
 # ---------- Configure Shaders dialog ----------
-# Flipbook Animations / Foliage Wind — live uniforms on the
+# Foliage Wind — live uniforms on the
 # overlay's shader materials (no rebuild), persisted project-wide.
 func _open_shader_dialog() -> void:
 	var d: Dictionary = HighpolyMapContext.shader_prefs
@@ -4378,22 +4039,6 @@ func _open_shader_dialog() -> void:
 		EditorInterface.get_editor_settings().set_project_metadata(
 				"highpoly_mapctx", "_shaders", HighpolyMapContext.shader_prefs)
 		lbl.text = mapctx.apply_shader_prefs(EditorInterface.get_edited_scene_root())
-
-	var f_lbl := Label.new(); f_lbl.text = "Flipbook Animations"
-	box.add_child(f_lbl)
-	var f_row := HBoxContainer.new(); box.add_child(f_row)
-	var f_sl := HSlider.new()
-	f_sl.min_value = 0.0; f_sl.max_value = 2.0; f_sl.step = 0.05
-	f_sl.value = float(d.get("flip", 1.0))
-	f_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	f_sl.tooltip_text = "How fast the distant smoke plumes billow. 0 freezes them still."
-	f_row.add_child(f_sl)
-	var f_val := Label.new(); f_val.text = "×%.2f" % f_sl.value
-	f_row.add_child(f_val)
-	f_sl.value_changed.connect(func(v: float):
-		HighpolyMapContext.shader_prefs["flip"] = v
-		f_val.text = "×%.2f" % v
-		apply.call())
 
 	var wind_chk := CheckBox.new()
 	wind_chk.text = "Foliage Wind"
@@ -4474,15 +4119,12 @@ func _save_mapctx_state() -> void:
 		"range": mapctx_range.value if mapctx_range else RANGE_DEFAULT,
 		"no_cull": mapctx_nocull.button_pressed if mapctx_nocull else false,
 		"maptile": false,      # the SDK plugin owns the ground texture now
-		"light": mapctx_light.button_pressed if mapctx_light else false,
-		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
-		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
-		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
-		"proplight": prop_light_on.button_pressed if prop_light_on else false,
-		"fill": mapctx_fill.value if mapctx_fill else 0.0,
+		# No lighting or FX keys: those switches are gone (fork F-08). A state
+		# saved by an older build may still carry them (light, gi, shadows,
+		# maplights, proplight, fill, fx); nothing reads them, and this write
+		# replaces the whole entry, so they drop out on the next save.
 		"photo": mapctx_photo.value if mapctx_photo else 75.0,
 		"optimize": true,      # always on: it is what the Range slider means
-		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
 				if mapctx_variant and mapctx_variant.selected >= 0 else "Off",
 		# The RAW dropdown id, not _mapctx_tex_mode(). They were the same thing
@@ -4495,7 +4137,7 @@ func _save_mapctx_state() -> void:
 	})
 
 # Plugin/editor START only (not scene switches): put the overlay back the way
-# this map had it — checkboxes, range, lighting, detail mode — and kick the
+# this map had it — checkboxes, range, detail mode — and kick the
 # normal background build. Updated models flow in via the standard staleness
 # checks (registry refresh + GLB mtime vs sidecar), i.e. "Check for updates"
 # semantics without the clicks.
@@ -4506,18 +4148,10 @@ func _save_mapctx_state() -> void:
 # everything, high-poly models included.
 func _restore_mapctx_state() -> void:
 	var r := EditorInterface.get_edited_scene_root()
-	# A SOFT REOPEN LEFT EVERYTHING STANDING. The sweep below exists because an
-	# ordinary plugin reload orphans our owner=null overlays, and there is nothing
-	# orphaned here: the same map context node, the same FX, the same lighting rig,
-	# still owned by the service that built them and handed across intact. Sweeping
-	# them would destroy exactly what the soft reopen exists to keep.
+	# A SOFT REOPEN LEFT EVERYTHING STANDING: the same map context node, still
+	# owned by the service that built it and handed across intact.
 	var soft := _soft_restore
 	_soft_restore = false
-	if r != null and not soft:
-		# plugin reloads orphan our owner=null overlay nodes ("FX won't
-		# despawn") — sweep them all before restoring the saved state
-		HighpolyFx.clear(r)
-		LightingScript.clear(r)
 	var map: String = mapctx.map_of(r)
 	if map == "": return
 	# A BOOT STARTS CLEAN. Godot reopens whatever scene was last edited, and
@@ -4611,43 +4245,9 @@ func _restore_mapctx_state() -> void:
 		var _gr_on := bool(d.get("grass", false))
 		mapctx_grass.set_pressed_no_signal(_gr_on)
 		if mapctx: mapctx.set_grass(_gr_on)
-	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))
-	if mapctx_shadows: mapctx_shadows.set_pressed_no_signal(bool(d.get("shadows", true)))
-	if mapctx_maplights: mapctx_maplights.set_pressed_no_signal(bool(d.get("maplights", false)))
-	# set_pressed_no_signal SKIPS the handler, so the switch has to be applied by
-	# hand or the statics and the chip disagree. That is what left a rebooted
-	# scene showing lit fixtures under a chip that read "off".
-	if prop_light_on:
-		var _pl := bool(d.get("proplight", false))
-		prop_light_on.set_pressed_no_signal(_pl)
-		_set_prop_lighting(_pl)
-	# set_pressed_no_signal skips the handler, so the card layer has to be told
-	# separately — otherwise a restore leaves the statics saying "off" while the
-	# chip reads on (or vice versa) and the next build guesses wrong.
-	if mapctx_fx:
-		MapContextScript.show_fx_cards = bool(d.get("fx", false))
-	if mapctx_fx and bool(d.get("fx", false)):
-		mapctx_fx.set_pressed_no_signal(true)
-		mapctx.set_fx_cards_shown(r, true)
-		lbl.text = await HighpolyFx.apply(r, map, true, _lane(FX_JOB),
-			mapctx.game_source)
-	# The FX apply above yields. A scene closed during it leaves `r` freed, and
-	# everything below still hands it to typed `root: Node` parameters, which
-	# fail at the call rather than inside.
-	if not is_instance_valid(r):
-		return
-	if bool(d.get("light", false)) and mapctx_light != null:
-		mapctx_light.set_pressed_no_signal(true)
-		_lighting_subs_enabled(true)
-		# restore the interior fill BEFORE the rig is built, so apply() reads the
-		# saved value rather than the static default and the view does not flash
-		# at 22% on the way to whatever the user actually chose
-		if mapctx_fill:
-			var fv: float = float(d.get("fill", mapctx_fill.value))
-			mapctx_fill.set_value_no_signal(fv)
-			if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fv)
-			LightingScript.interior_fill = clampf(fv / 100.0, 0.0, 1.0)
-		_lighting_changed()
+	# The Lighting, FX and Prop Lighting keys an older save may carry are not
+	# read: those switches are gone, and the editor's own preview light stays
+	# in charge.
 	# variant layers (dropdown lives under "Original map objects")
 	_variant_row_update(bool(d.get("objects", false)))
 	var _sv := str(d.get("variant", "Off"))
@@ -4677,8 +4277,7 @@ func _restore_mapctx_state() -> void:
 	# where that combination lives now. Nothing is re-downloaded; it is the same
 	# cache, re-labelled.
 	if saved_tex == MODE_SDK and (bool(d.get("on", false)) or bool(d.get("objects", false)) \
-			or bool(d.get("backdrop", false)) \
-			or bool(d.get("light", false)) or bool(d.get("fx", false))):
+			or bool(d.get("backdrop", false))):
 		saved_tex = MODE_LIGHT
 	if mode_btn != null and saved_tex != mode_btn.get_selected_id():
 		mode_btn.select(mode_btn.get_item_index(saved_tex))
@@ -4714,7 +4313,7 @@ func _restore_mapctx_state() -> void:
 #
 # The three early exits in _ensure_game_source all used to just answer "yes,
 # there is one" and return. That is true and not enough: the assignments that
-# hand the reader to the object library and the lighting live at the BOTTOM of
+# hand the reader to the object library live at the BOTTOM of
 # the function, so a caller that took an early exit left those pointing at
 # whatever was there before - the previous map's reader, on a map switch. The
 # library then answered every "what does this prop look like" from the wrong
@@ -4725,7 +4324,6 @@ func _adopt_open_source(map: String) -> bool:
 	if str(mapctx.game_source.level) != map.to_lower():
 		return false
 	LibScript.game_source = mapctx.game_source
-	LightingScript.game_source = mapctx.game_source
 	return true
 
 
@@ -4865,7 +4463,6 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# The object library reads from the same source: a placed object is
 	# assembled from the game's own prefab instead of a fetched GLB.
 	LibScript.game_source = gs
-	LightingScript.game_source = gs   # the level's own sky panorama
 	# THE PLACEABLE CATALOGUE, AFTER THE MAP IS USABLE, not in front of it.
 	#
 	# It is 85 s cold, it covers objects from OTHER levels, and this map does not
@@ -5314,58 +4911,7 @@ func _reoverride_selection() -> void:
 # destroyed shells, …) cycles base -> variants -> base instead — doors always
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
-var prop_light_on: Button = null
 var _said_not_map := ""              # scene we have already explained is not a map
-
-
-# ONE SWITCH, BOTH HALVES. The fixtures are Light3D children of each overlay and
-# only need showing; the glow is an emission multiplier baked into the materials,
-# so that half needs the materials rebuilding. Doing only one of the two would
-# leave a lamp casting light with a dark bulb, or a bright bulb lighting nothing.
-func _set_prop_lighting(on: bool) -> void:
-	# STATICS ARE SET THROUGH THE PRELOAD CONST, never through the class_name.
-	# After an in-place reload the two are different script objects and the
-	# assignment lands on the wrong one, which is a bug this plugin has already
-	# paid for once.
-	LightingScript.prop_lighting = on
-	# OFF MEANS OFF, not "as authored". The first version set this to 1.0 when
-	# switched off, which draws the lit sheet at the strength the artist gave it -
-	# and a lamp's lit sheet is a lit sheet, so every bulb still glowed. A switch
-	# labelled Prop Lighting that leaves the bulbs on is just wrong.
-	var r := EditorInterface.get_edited_scene_root()
-	var n: int = LightingScript.set_prop_lights_shown(r, on)
-	# The cull pass early-outs while the camera is still, so without this a
-	# toggle made standing in one place would not be re-decided until the user
-	# moved. It is also what applies the RANGE to fixtures just switched on:
-	# set_prop_lights_shown shows all of them, and the next tick trims them back
-	# to the slider.
-	LightingScript.invalidate_light_cull()
-	# ONE NUMBER ON A FEW DOZEN MATERIALS, not a rebuild.
-	#
-	# This used to call invalidate_materials and then re-apply every placed
-	# overlay. That re-resolves every surface from the depot - 13,097 of them,
-	# measured at 12.7 SECONDS in the user's log - to change an emission
-	# multiplier, and 99% of those surfaces have no glow to change. The materials
-	# are shared between the map context and placed props, so setting the
-	# parameter in place reaches both and nothing has to be rebuilt at all.
-	var want: float = PROP_EMISSION_ON if on else 0.0
-	var gs = mapctx.game_source if mapctx != null else null
-	if gs != null and gs.has_method("set_prop_emission"):
-		var t0 := Time.get_ticks_msec()
-		var touched: int = gs.set_prop_emission(want)
-		Log.info("Prop lighting %s: %d fixture(s), %d material(s) in %d ms"
-			% ["on" if on else "off", n, touched, Time.get_ticks_msec() - t0])
-	else:
-		# No map open yet. Nothing exists to update, but the value has to be
-		# right for whatever gets built next.
-		GameSourceScript.prop_emission = want
-	lbl.text = "Prop lighting " + ("on" if on else "off")
-	_save_mapctx_state()
-
-
-# How hard a lit sheet is driven when the switch is on. Ours, not the level's:
-# the sheet says WHERE the light is, not how bright the room should read.
-const PROP_EMISSION_ON := 4.0
 
 
 # WRAPPED RATHER THAN WRAPPED IN PLACE. The body below returns from five
@@ -5578,8 +5124,6 @@ static func _layer_chip_name(group: String) -> String:
 			return "Original map objects"
 		"Roads":
 			return "Roads"
-		"FXCards":
-			return "FX"
 		"Terrain", "_MAP_CONTEXT":
 			return "Extended Terrain"
 	return group

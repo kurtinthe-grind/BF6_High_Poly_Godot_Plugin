@@ -1306,13 +1306,6 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	placements_ready = false
 	var next_level := map.to_lower()
 	if level != next_level:
-		_sky_cache.clear()
-		_active_ve_cache.clear()
-		_environment_cache.clear()
-		_zone_exposure_cache.clear()
-		_lighting_zones_cache.clear()
-		_lighting_zones_stats.clear()
-		_lighting_zones_done = false
 		_scatter_cache.clear()
 		_scatter_done = false
 	level = next_level
@@ -1420,10 +1413,11 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			_exe_others.append(c)
 
 	walk = BF6Walk.new(src, types)
-	# LIGHTS COME OUT OF THE SAME PASS as the placements. They are placed by
-	# exactly this traversal — a fixture inherits the composed transform of
-	# whichever prefab holds it — and walking a second time to fetch them would
-	# cost another 50 s to learn something the first walk went straight past.
+	# LIGHT ENTITIES ARE STILL COLLECTED, though nothing reads them since the
+	# fork removed Lighting (F-08). The walk cache is keyed on the collector set
+	# (BF6Walk._want_sig), so dropping "light" here would make every map's
+	# cached walk a miss and cost a cold re-walk (~50 s) per map. Drop it
+	# together with LIGHT_TYPES / LIGHT_FIELDS when that one-off cost is fine.
 	for g in LIGHT_TYPES:
 		walk.want_types[str(g)] = "light"
 	# AND THE ENVIRONMENT DECAL VOLUMES, for the same reason: soot under a burn
@@ -1672,12 +1666,6 @@ var _map_data_key := "￿"          # not "" — that is a legitimate key
 # cache key: sections are added as their layers are switched on, so this records
 # progress rather than identity.
 var _md_built := {}
-# The level-light records belong to the open live reader. They used to be
-# serialized to lights.json and immediately parsed back by highpoly_lighting,
-# which made a stale derived file a runtime input. Keep the already-decoded
-# records in memory instead; map_data still reports the count for its UI/timing
-# contract, while level_lights() hands the actual rows to the renderer.
-var _level_light_records: Array = []
 
 
 # EVERYTHING map_data DERIVED, dropped so the next ask is computed by the code
@@ -1700,10 +1688,6 @@ var _level_light_records: Array = []
 func drop_map_data() -> void:
 	_map_data.clear()
 	_map_data_key = "￿"
-	_level_light_records.clear()
-	_lighting_zones_cache.clear()
-	_lighting_zones_stats.clear()
-	_lighting_zones_done = false
 
 
 # Has map_data already been built for this cache directory? Asked by the builder
@@ -1741,7 +1725,7 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # is 64 s of a 74 s terrain-only apply, on the main thread, and it is the "why
 # is it extracting things I did not ask for" that people keep reporting.
 #
-# `want` names the OPTIONAL sections: lights, fx, edv. Absent or empty means
+# `want` names the OPTIONAL sections: edv. Absent or empty means
 # build everything, so every existing caller behaves exactly as before. The
 # ground, the roads and the group placements are always built: a terrain apply
 # genuinely needs them, and they are what the props and skyline lanes key off.
@@ -1750,7 +1734,11 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # lights wanted, and only the missing section is built - so nothing is lost by
 # not building it up front, which is what makes this safe to skip rather than
 # merely cheaper.
-const MD_OPTIONAL := ["lights", "fx", "edv"]
+#
+# The light and FX sections went with the fork's Lighting and FX switches
+# (F-08); a caller that still names them is ignored, because _md_need reads
+# only the keys listed here.
+const MD_OPTIONAL := ["edv"]
 
 func map_data(cache_dir := "", want := {}) -> Dictionary:
 	var need := _md_need(want)
@@ -1771,7 +1759,7 @@ func map_data(cache_dir := "", want := {}) -> Dictionary:
 
 func _md_need(want: Dictionary) -> Dictionary:
 	if want.is_empty():
-		return {"lights": true, "fx": true, "edv": true}
+		return {"edv": true}
 	var d := {}
 	for k in MD_OPTIONAL:
 		d[k] = bool(want.get(k, false))
@@ -1780,24 +1768,9 @@ func _md_need(want: Dictionary) -> Dictionary:
 
 # Build the optional sections named in `need` into `out`. Used both by the first
 # build and by a later ask that turns a layer on.
-func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
-	if cache_dir != "" and bool(need.get("lights", false)) \
-			and not _md_built.has("lights"):
-		var t := Time.get_ticks_msec()
-		# Written as the files the light layer reads, rather than handed over in
-		# memory: the layer is toggled long after the build, from the dock.
-		out["lights"] = lights(cache_dir)
-		_md_built["lights"] = true
-		note_phase("lights", Time.get_ticks_msec() - t, int(out["lights"]),
-			"fixtures", FROM_MEMORY, "from the walk's light entities")
-	if cache_dir != "" and bool(need.get("fx", false)) and not _md_built.has("fx"):
-		var t := Time.get_ticks_msec()
-		out["fx"] = fx(cache_dir)
-		_md_built["fx"] = true
-		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
-			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
+func _md_fill(_cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 	if bool(need.get("edv", false)) and not _md_built.has("edv"):
-		# In memory, not a file like lights: the builder runs while
+		# In memory, not a file: the builder runs while
 		# this source is alive either way, and the sheets resolve through
 		# decal_sheet() at build time. The key is written even when the answer
 		# is empty - the records come off the already-run walk, so a re-ask
@@ -1808,9 +1781,6 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 		_md_built["edv"] = true
 		note_phase("decal volumes", Time.get_ticks_msec() - t_e, recs.size(),
 			"volumes", FROM_MEMORY, "from the walk's collected entities")
-	if phases.has("lights") and phases.has("fx points"):
-		timings["lights + fx"] = int(phases["lights"]["ms"]) \
-			+ int(phases["fx points"]["ms"])
 
 
 # WHICH SWITCHABLE LAYER A PLACEMENT BELONGS TO, from the subworld it came out
@@ -4159,105 +4129,6 @@ const EDV_FIELDS: Array = [F_EDV_TEMPLATE, F_EDV_ENABLE, F_EDV_ALPHA,
 	F_EDV_CULL]
 
 
-# The schema highpoly_lighting.set_map_lights already reads, written into the
-# map cache. Deliberately the same FILE as the download path used: the light
-# builder is 150 lines of Godot-side work — culling, distance fade, the spot
-# cone convention — and a second entry point into it is how the two drift until
-# only one is right.
-# One collected entity -> one record of the schema set_map_lights reads, or
-# null when it is not a light or is authored off.
-#
-# Split out of lights() so the placed-object walker can produce the same shape:
-# a lamp dropped into a scene and the same lamp standing on the map are the same
-# fixture read the same way, and two builders would drift.
-func _light_record(ent: Dictionary):
-	if str(ent.get("tag", "")) != "light":
-		return null
-	var tname := str(LIGHT_TYPES.get(str(ent.get("type", "")), ""))
-	if tname == "":
-		return null
-	var f: Dictionary = ent.get("f", {})
-	# An explicitly disabled fixture is off in the game and stays off here.
-	# Absent means enabled: most lights declare none of the six spellings.
-	for h in F_ENABLED:
-		if f.has(h) and f[h] == false:
-			return null
-	if f.get(F_VISIBLE) == false:
-		return null
-	var xf: Array = ent["xf"]
-	var pos: Vector3 = xf[3]
-	var col: Vector3 = f.get(F_COLOR, Vector3.ONE) if f.get(F_COLOR) is Vector3 \
-		else Vector3.ONE
-	var rad = f.get(F_ATTEN_RADIUS)
-	if not (rad is float or rad is int):
-		rad = f.get(F_RADIUS_A, f.get(F_RADIUS_B, 10.0))
-	var spot := tname.contains("Spot")
-	var rec := {
-		"pos": [pos.x, pos.y, pos.z],
-		"spot": spot,
-		"radius": float(rad) if (rad is float or rad is int) else 10.0,
-		"color": [col.x, col.y, col.z],
-		"intensity": float(f.get(F_INTENSITY, 1000.0)),
-		"unit": int(f.get(F_LIGHT_UNIT, 0)),
-		"layer": "base",
-		"type": tname,
-	}
-	if spot:
-		rec["angle"] = float(f.get(F_OUTER_ANGLE, 60.0))
-		# A SPOT SHINES ALONG MINUS ITS FORWARD AXIS. Basis row 2 is FORWARD
-		# (right/up/forward/translation at 0..3), and the sign is the whole
-		# answer: get it backwards and every cone in the map points at the
-		# ceiling it is mounted in.
-		#
-		# MEASURED, not assumed. Read off the fixtures whose real aim is not
-		# in doubt: lf_com_potlight_round_01 is a recessed ceiling downlight
-		# and its component sits 0.11 m BELOW the fixture origin with forward
-		# = (0, +1, 0); lf_com_flushmount_round_01 (-0.13 m) and
-		# lf_ind_ceilingled_square_01 (-0.47 m) are the same, and
-		# lf_com_streetlight_02 and lf_euu_streetlamp_vintage_01 sit 9.9 m and
-		# 7.1 m up their poles with forward = (0, +1, 0). Taking forward as
-		# the beam would have every one of them lighting the ceiling or the
-		# sky, so the beam is -forward.
-		var d: Vector3 = -(xf[2] as Vector3)
-		if d.length() > 1e-4:
-			rec["dir"] = [d.x, d.y, d.z]
-	return rec
-
-
-func _light_records(ents: Array) -> Array:
-	var out: Array = []
-	for e in ents:
-		if not (e is Dictionary):
-			continue
-		var rec = _light_record(e)
-		if rec != null:
-			out.append(rec)
-	return out
-
-
-func lights(_cache_dir: String) -> int:
-	if walk == null or walk.ents.is_empty():
-		_level_light_records.clear()
-		return 0
-	var out: Array = _light_records(walk.ents)
-	var spots := 0
-	for r in out:
-		if bool((r as Dictionary).get("spot", false)):
-			spots += 1
-	_level_light_records = out
-	_say("game source: %d lights (%d spot, %d omni)"
-		% [out.size(), spots, out.size() - spots])
-	return out.size()
-
-
-# Read-only view of the current level's live-decoded fixtures. Returning the
-# Array itself is intentional: callers only iterate it, and duplicating several
-# thousand dictionaries every time the lighting switch is toggled would add a
-# large allocation without adding safety.
-func level_lights() -> Array:
-	return _level_light_records
-
-
 # ---------------------------------------------------------------------------
 # ENVIRONMENT DECAL VOLUMES, read off the walk's collected entities. See the
 # chain documented at EDV_TYPES. Returns records the map context turns into
@@ -4404,595 +4275,8 @@ func decal_sheet(file_guid: String):
 	return _decal_sheet(file_guid, false)
 
 
-# ---------------------------------------------------------------------------
-# THE MAP'S FX SPAWN POINTS.
-#
-# Already in the walk: every fx_* reference is visited and its world transform
-# composed, and the rows that resolve to no mesh are exactly these. So this
-# reads the rows rather than walking again.
-#
-# WHAT IS SHIPPED, AND WHY NOT ALL OF IT. On Dumbo 14,163 rows are fx, and
-# ~94% of them are destruction and impact effects — fx_propdest_glass_tiny on
-# every window, fx_gendest_metal on every railing. Those are EVENT-TRIGGERED:
-# they fire when the prop breaks, and the plugin draws a record as a
-# continuously emitting particle system. Shipping them buries the map under
-# permanent shattering glass and burns the whole emitter budget on effects that
-# are never seen in play. Ambient FX is what reads as the map.
-const FX_TRIGGERED: Array = ["dest", "debris", "breakpoint", "impact", "bullet",
-	"_hit", "explosion", "detach", "burst", "tracer", "muzzle", "casing"]
-
-# Class drives the plugin's fallback look and its draw distance, so it only has
-# to be right about the KIND. Order matters: "smokey_steam" is smoke before it
-# is anything else.
-const FX_CLASSES: Array = [
-	["electric", ["electric", "spark", "arc_", "lightning"]],
-	["fire", ["fire", "flame", "burn", "ember", "torch"]],
-	["smoke", ["smoke", "steam", "fume", "exhaust"]],
-	["dust", ["dust", "sand", "ash", "debris", "trash", "leaf", "leaves",
-		"paper", "pollen", "snow", "mist", "fog", "haze"]],
-]
-
-
-static func _fx_class(n: String) -> String:
-	for c in FX_CLASSES:
-		for tok in (c as Array)[1]:
-			if n.contains(str(tok)):
-				return str((c as Array)[0])
-	return "other"
-
-
-func fx(cache_dir: String, keep_triggered := false) -> int:
-	if walk == null:
-		return 0
-	var out: Array = []
-	var triggered := 0
-	var joined := 0
-	var graph_cache := {}
-	for r in walk.rows:
-		var row: Dictionary = r
-		var path := str(row["mesh"])
-		var leaf := path.get_file().to_lower()
-		if leaf.ends_with(".ebx"):
-			leaf = leaf.substr(0, leaf.length() - 4)
-		if not leaf.begins_with("fx_"):
-			continue
-		var trig := false
-		for tok in FX_TRIGGERED:
-			if leaf.contains(str(tok)):
-				trig = true
-				break
-		if trig:
-			triggered += 1
-			if not keep_triggered:
-				continue
-		var xf = row["xf"]
-		if not (xf is Array) or (xf as Array).size() < 4:
-			continue
-		var o: Vector3 = (xf as Array)[3]
-		var fwd: Vector3 = (xf as Array)[2]
-		var yaw := 0.0
-		if absf(fwd.x) > 1e-6 or absf(fwd.z) > 1e-6:
-			yaw = atan2(fwd.x, fwd.z)
-		# THE EMITTER GRAPH, mined rather than shipped. The plugin's fx_params
-		# table is keyed by eg_* graph, and an fx_ effect COMPOSES one or more of
-		# them — the pipeline kept that mapping in a 23 MB fx_effects.json. It
-		# does not need to: an fx partition's imports name the graphs directly,
-		# and there are a few hundred distinct effects on a map against tens of
-		# thousands of placements, so this is a few hundred header reads.
-		var graph = graph_cache.get(leaf)
-		if graph == null:
-			graph = _fx_graph(path)
-			graph_cache[leaf] = graph
-		if str(graph) != "":
-			joined += 1
-		out.append({
-			"pos": [o.x, o.y, o.z],
-			"yaw": yaw,
-			"class": _fx_class(leaf),
-			"effect": str(graph) if str(graph) != "" else leaf.to_upper(),
-			"source_class": "base",
-			"name": leaf,
-		})
-	if out.is_empty():
-		return 0
-	DirAccess.make_dir_recursive_absolute(cache_dir)
-	var f := FileAccess.open("%s/fx.json" % cache_dir, FileAccess.WRITE)
-	if f == null:
-		_say("game source: fx — cannot write to %s" % cache_dir)
-		return 0
-	f.store_string(JSON.stringify({"fx": out, "_map": level,
-		"_triggered_excluded": 0 if keep_triggered else triggered}))
-	f.close()
-	_say("game source: %d fx points (%d event-triggered excluded), "
-		% [out.size(), 0 if keep_triggered else triggered]
-		+ "%d joined an emitter graph" % joined)
-	return out.size()
-
-
-# The first eg_* partition an fx effect imports, or "".
-func _fx_graph(path: String) -> String:
-	var n := path.to_lower()
-	if n.ends_with(".ebx"):
-		n = n.substr(0, n.length() - 4)
-	var raw := src.get_ebx(n)
-	if raw.is_empty():
-		return ""
-	var e := BF6Ebx.new(types, walk.gi)
-	# The EFIX tables alone carry the imports, and parse() reads exactly those —
-	# no instance is decoded here, which is why a few hundred of these is cheap.
-	if not e.parse(raw):
-		return ""
-	for imp in e.imports:
-		var target = walk.gi.get(str((imp as Dictionary)["partition"]))
-		if target == null:
-			continue
-		var tl := str(target).get_file().to_lower()
-		if tl.ends_with(".ebx"):
-			tl = tl.substr(0, tl.length() - 4)
-		if tl.begins_with("eg_"):
-			return tl.to_upper()
-	return ""
-
-
-# ---------------------------------------------------------------------------
-# THE SKY, from the level's own VisualEnvironment preset.
-#
-# The panorama the game draws behind the level. One .dds of it used to ship
-# inside this addon — Battlefield art, handed to everyone who installed the
-# plugin — which is exactly what it must not do; it is read from the player's
-# install instead, like everything else.
-#
-# The active preset is the non-`thermal` ve_* partition the level root imports.
-# `SkyType` 0 selects the panoramic path, `PanoramicTexture` is the HDR image,
-# and `LuminanceScale` carries its magnitude: panoramas ship NORMALISED, so the
-# texture alone is not the brightness.
-#
-# 360 x 90, NOT 360 x 180 — the trap this whole feature turns on. The 4:1 aspect
-# is angular coverage: the top row is the ZENITH, the bottom row the HORIZON,
-# and there is no below-horizon content at all. Godot's PanoramaSkyMaterial
-# wants a 2:1 equirect, and handing it the texture directly stretches 90 degrees
-# of sky over a full sphere — measured across 22 maps, that puts the painted sun
-# BELOW the horizon on every one. So it is remapped: the panorama occupies the
-# upper half and the horizon row is carried down to fill the lower.
-const F_PANORAMIC_TEXTURE := 0xC4184CD8
-const F_LUMINANCE_SCALE := 0x5EBAF2B1
-const F_SKY_TYPE := 0xFF6D65E7
-const F_PANORAMIC_ROTATION := 0x89F2223A
-
-# VisualEnvironment component type GUID prefixes. These are the same
-# component-qualified selectors used by core/src/velighting.cpp. Field hashes
-# are never searched globally: several names occur on more than one component
-# with different meanings and valid-looking values.
-const VE_SUN := "f8b3f61a"
-const VE_SKY := "5fb52ff8"
-const VE_FOG := "8ab9baf8"
-const VE_EXPOSURE := "5b6bbccc"
-const VE_GRADING := "ef4eec57"
-const VE_WHITE := "eeeab5a6"
-const VE_AO := "2f9e79a0"
-const VE_GI := "c4ea62ae"
-const VE_SHADOW := "1c6df12b"
-const VE_ENTITY := "5d092d08"
-
-const VE_X := 0x3901DB14
-const VE_Y := 0x42FC0F5E
-const VE_Z := 0x32A99B9C
-const VE_QUALITY_0 := 0xD0A94456
-const VE_VISIBILITY := 0x66BCDFFB
-
-var _active_ve_cache := {}
-var _environment_cache := {}
-var _zone_exposure_cache := {}
-var _lighting_zones_cache: Array = []
-var _lighting_zones_stats := {}
-var _lighting_zones_done := false
-
-
-# A real/boolean field, including Frostbite's four-member quality struct. The
-# caller checks field presence before calling, so null means malformed data and
-# is not silently turned into a plausible zero.
-static func _ve_scalar(d: Dictionary, h: int):
-	var v = d.get(h)
-	if v is Dictionary:
-		v = (v as Dictionary).get(VE_QUALITY_0)
-	return v
-
-
-static func _ve_vec(d: Dictionary, h: int) -> Array:
-	var v = d.get(h)
-	if not (v is Dictionary):
-		return []
-	var q: Dictionary = v
-	if not q.has(VE_X) or not q.has(VE_Y) or not q.has(VE_Z):
-		return []
-	return [float(q[VE_X]), float(q[VE_Y]), float(q[VE_Z])]
-
-
-static func _ve_put_scalar(out: Dictionary, key: String, d: Dictionary, h: int) -> void:
-	if not d.has(h):
-		return
-	var v = _ve_scalar(d, h)
-	if v is bool or v is int or v is float:
-		out[key] = v
-
-
-static func _ve_put_vec(out: Dictionary, key: String, d: Dictionary, h: int) -> void:
-	if not d.has(h):
-		return
-	var v := _ve_vec(d, h)
-	if not v.is_empty():
-		out[key] = v
-
-
-# Inspect what a candidate IS rather than deciding from its filename. The
-# OutdoorLight component and VE entity visibility are the two discriminators
-# proven by the native reader. Keeping this method separate also makes the
-# selection control testable without loading textures or building a scene.
-func _inspect_ve(part: String) -> Dictionary:
-	var raw := src.get_ebx(part)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-	var out := {"path": part, "has_sun": false, "visibility": 0.0}
-	for i in range(e.instance_offsets.size()):
-		var tg := e.instance_type(i).to_lower().left(8)
-		if tg == VE_SUN:
-			out["has_sun"] = true
-		elif tg == VE_ENTITY:
-			var d := e.read_instance(i, 0, {VE_VISIBILITY: true})
-			if d.has(VE_VISIBILITY) and d[VE_VISIBILITY] is float:
-				out["visibility"] = float(d[VE_VISIBILITY])
-	return out
-
-
-# Exact exposure fields from ONE named VE preset. Local presets are thin
-# overrides, so requiring the sun/sky components used by environment_lighting()
-# would reject the very files a lighting zone is supposed to activate.
-func _zone_exposure(part: String) -> Dictionary:
-	var key := part.to_lower()
-	if _zone_exposure_cache.has(key):
-		return _zone_exposure_cache[key]
-	var raw := src.get_ebx(key)
-	if raw.is_empty():
-		_zone_exposure_cache[key] = {}
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		_zone_exposure_cache[key] = {}
-		return {}
-	var out := {}
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i).to_lower().left(8) != VE_EXPOSURE:
-			continue
-		var d := e.read_instance(i)
-		_ve_put_scalar(out, "ev", d, 0xE1877E34)
-		_ve_put_scalar(out, "ev_max", d, 0xA8AE270A)
-		break
-	_zone_exposure_cache[key] = out
-	return out
-
-
-# Exact local VisualEnvironment trigger geometry from the public native ABI.
-# The envelope's controls are checked before any row is exposed to the renderer:
-# a plausible-looking result with a working rotated-source join is rejected.
-func lighting_zones() -> Array:
-	if src == null or walk == null or types == null:
-		return []
-	if _lighting_zones_done:
-		return _lighting_zones_cache
-	if not _ensure_native_core():
-		return []
-	var envelope = JSON.parse_string(str(_native_core.lighting_zones(level)))
-	if not (envelope is Dictionary) or not bool(envelope.get("ok", false)):
-		_say("game source: lighting zones - native read failed: %s" %
-			str(envelope.get("error", "invalid response") if envelope is Dictionary
-				else "invalid response"))
-		return []
-	var rows: Array = envelope.get("rows", [])
-	var stats: Dictionary = envelope.get("stats", {})
-	var shape_links := int(stats.get("shape_links", -1))
-	var controls_ok := int(stats.get("total", -1)) == rows.size() \
-			and int(stats.get("joined_preset", -1)) == rows.size() \
-			and int(stats.get("target_other", -1)) == 0 \
-			and shape_links >= rows.size() \
-			and int(stats.get("rotated_control_hits", -1)) == 0
-	if not controls_ok:
-		_say("game source: lighting zones - rejected controls: real=%d/%d rotated=%d other=%d" % [
-			rows.size(), shape_links, int(stats.get("rotated_control_hits", -1)),
-			int(stats.get("target_other", -1))])
-		return []
-
-	var out: Array = []
-	for item in rows:
-		if not (item is Dictionary):
-			continue
-		var row: Dictionary = item
-		var x: Array = row.get("xform", [])
-		if x.size() != 12:
-			continue
-		var exposure := _zone_exposure(str(row.get("preset", "")))
-		if exposure.is_empty():
-			# A zone with no decoded override cannot alter the environment. Keep it
-			# out instead of silently substituting the outdoor EV.
-			continue
-		var cooked := row.duplicate()
-		cooked["transform"] = Transform3D(Basis(
-			Vector3(float(x[0]), float(x[1]), float(x[2])),
-			Vector3(float(x[3]), float(x[4]), float(x[5])),
-			Vector3(float(x[6]), float(x[7]), float(x[8]))),
-			Vector3(float(x[9]), float(x[10]), float(x[11])))
-		cooked["ev"] = float(exposure.get("ev", 0.0))
-		cooked["ev_max"] = float(exposure.get("ev_max", 0.0))
-		out.append(cooked)
-	_lighting_zones_cache = out
-	_lighting_zones_stats = stats.duplicate()
-	_lighting_zones_done = true
-	_say("game source: lighting zones - %d usable of %d direct joins / %d shape links; control 0/%d; %d channel-routed omitted" % [
-		out.size(), rows.size(), shape_links, shape_links,
-		int(stats.get("omitted_no_preset", 0))])
-	return _lighting_zones_cache
-
-
-# Dominant outdoor preset imported by the level root. Shared common presets are
-# excluded by path; thermal is an optics mode; a sun-carrying preset wins over
-# thin overlays; visibility breaks the remaining tie. `candidates` deliberately
-# remains >1 for mp_contaminated because its two equal candidates author the
-# same sun and the data exposes no proven discriminator.
-func _active_ve() -> Dictionary:
-	if not _active_ve_cache.is_empty():
-		return _active_ve_cache
-	if src == null or walk == null or types == null:
-		return {}
-	# A lighting-only open deliberately skips the placement walk, so its stats
-	# have no root. Locate the root in the mounted EBX index exactly as the native
-	# reader does instead of making lighting depend on Original Objects.
-	var root := ""
-	for key in src.ebx.keys():
-		var n := str(key).to_lower()
-		if n.ends_with(".ebx"):
-			n = n.substr(0, n.length() - 4)
-		# Also under the 1.4.3.0 group folder (levels/gr/<level>/<level>).
-		if n.contains("/levels/") and BF6Source.level_root_tail(n, level.to_lower()):
-			root = n
-			break
-	if root == "":
-		return {}
-	if root.to_lower().ends_with(".ebx"):
-		root = root.substr(0, root.length() - 4)
-	var raw := src.get_ebx(root)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-	var paths: Array[String] = []
-	for imp in e.imports:
-		var target = walk.gi.get(str((imp as Dictionary)["partition"]))
-		if target == null:
-			continue
-		var n := str(target).to_lower()
-		if n.ends_with(".ebx"):
-			n = n.substr(0, n.length() - 4)
-		var leaf := n.get_file()
-		if not n.contains("/levels/") or not leaf.begins_with("ve_") \
-				or leaf.contains("thermal"):
-			continue
-		if not paths.has(n):
-			paths.append(n)
-	paths.sort()
-	var inspected: Array = []
-	var any_sun := false
-	for path in paths:
-		var c := _inspect_ve(path)
-		if c.is_empty():
-			continue
-		inspected.append(c)
-		any_sun = any_sun or bool(c["has_sun"])
-	var best: Dictionary = {}
-	var kept := 0
-	for c in inspected:
-		if any_sun and not bool((c as Dictionary)["has_sun"]):
-			continue
-		kept += 1
-		if best.is_empty() or float((c as Dictionary)["visibility"]) \
-				> float(best["visibility"]):
-			best = c
-	if best.is_empty():
-		return {}
-	best = best.duplicate()
-	best["candidates"] = kept
-	_active_ve_cache = best
-	return _active_ve_cache
-
-
-# The subset of the active VisualEnvironment that the Godot renderer consumes,
-# read directly from the installed game. Unknown-unit fields are still reported
-# (EV, tint, raw shadow distance) but are not converted by highpoly_lighting
-# until a conversion has a control.
-func environment_lighting() -> Dictionary:
-	if not _environment_cache.is_empty():
-		return _environment_cache
-	var active := _active_ve()
-	if active.is_empty():
-		return {}
-	var raw := src.get_ebx(str(active["path"]))
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-	var comp := {}
-	for i in range(e.instance_offsets.size()):
-		var tg := e.instance_type(i).to_lower().left(8)
-		if not comp.has(tg):
-			comp[tg] = e.read_instance(i)
-	var out := {
-		"preset": str(active["path"]).get_file(),
-		"preset_path": str(active["path"]),
-		"preset_candidates": int(active["candidates"]),
-		"visibility": float(active["visibility"]),
-	}
-	var d: Dictionary = comp.get(VE_SUN, {})
-	_ve_put_scalar(out, "sun_az", d, 0x8748D69F)
-	_ve_put_scalar(out, "sun_el", d, 0x04FF06A2)
-	_ve_put_scalar(out, "sun_lux", d, 0x130859CD)
-	_ve_put_vec(out, "sun_color", d, 0x7215CE32)
-
-	d = comp.get(VE_SKY, {})
-	_ve_put_scalar(out, "sky_rotation", d, F_PANORAMIC_ROTATION)
-	_ve_put_scalar(out, "sun_disc", d, 0x029A4B53)
-	_ve_put_scalar(out, "aerial_perspective", d, 0x9C856374)
-
-	d = comp.get(VE_FOG, {})
-	_ve_put_scalar(out, "fog_height_enabled", d, 0x93D3A211)
-	_ve_put_scalar(out, "fog_color_enabled", d, 0xE341E90D)
-	_ve_put_scalar(out, "fog_gradient_enabled", d, 0xF9763CB8)
-	out["fog_enabled"] = bool(out.get("fog_height_enabled", false)) \
-		or bool(out.get("fog_color_enabled", false)) \
-		or bool(out.get("fog_gradient_enabled", false))
-	_ve_put_vec(out, "fog_color", d, 0x0501B552)
-	_ve_put_scalar(out, "fog_dist_start", d, 0x682D7A3F)
-	_ve_put_scalar(out, "fog_dist_end", d, 0x4D8196A9)
-	_ve_put_scalar(out, "fog_altitude", d, 0x8CC2F99E)
-	_ve_put_scalar(out, "fog_depth", d, 0x0D3FCE6F)
-	_ve_put_scalar(out, "volumetrics", d, 0x00CBC378)
-	_ve_put_scalar(out, "sun_scatter", d, 0xCA5E0FED)
-
-	d = comp.get(VE_EXPOSURE, {})
-	_ve_put_scalar(out, "auto_exposure", d, 0xF56BC9AC)
-	_ve_put_scalar(out, "ev", d, 0xE1877E34)
-	_ve_put_scalar(out, "ev_max", d, 0xA8AE270A)
-	_ve_put_scalar(out, "exposure_compensation", d, 0xB308393B)
-	_ve_put_vec(out, "bloom_scale", d, 0x4EC18B88)
-
-	d = comp.get(VE_GRADING, {})
-	_ve_put_scalar(out, "grading_enabled", d, 0x565A3EB0)
-	_ve_put_vec(out, "grade_brightness", d, 0xB3B14547)
-	_ve_put_vec(out, "grade_contrast", d, 0x5FF33110)
-	_ve_put_vec(out, "grade_saturation", d, 0x3C6395F8)
-
-	d = comp.get(VE_WHITE, {})
-	_ve_put_scalar(out, "white_temperature", d, 0xDF6C5DBF)
-	_ve_put_scalar(out, "white_tint", d, 0xC155FC7D)
-
-	d = comp.get(VE_AO, {})
-	_ve_put_scalar(out, "ao_affects_sun", d, 0x816CF0B4)
-	_ve_put_scalar(out, "hbao_radius", d, 0x34444CFD)
-	_ve_put_scalar(out, "hbao_contrast", d, 0xB2994B82)
-
-	d = comp.get(VE_SHADOW, {})
-	if d.has(0x217E6BAB):
-		var sd = _ve_scalar(d, 0x217E6BAB)
-		if sd is float or sd is int:
-			out["sun_shadow_distance"] = [float(sd)]
-
-	d = comp.get(VE_GI, {})
-	_ve_put_vec(out, "gi_terrain_color", d, 0x3C77E4C8)
-	_ve_put_vec(out, "gi_sky_color", d, 0xF97F2EC3)
-	_ve_put_vec(out, "gi_ground_color", d, 0x045FF8C7)
-	_ve_put_vec(out, "gi_sun_color", d, 0xBFF74A5B)
-
-	if not out.has("sun_az") or not out.has("sun_el") or not out.has("sun_lux"):
-		return {}
-	_environment_cache = out
-	_say("game source: environment - %s, %d candidate(s), %d fields"
-		% [out["preset"], out["preset_candidates"], out.size()])
-	return _environment_cache
-
-
-# {texture, luminance_scale, rotation} or {} when the level has no panorama.
-func sky() -> Dictionary:
-	if src == null or walk == null or types == null:
-		return {}
-	if not _sky_cache.is_empty():
-		return _sky_cache
-	# The exact dominant preset selected from component content + visibility.
-	# Falling through to another imported ve_* when it has a panorama would mix
-	# two presets and produce a convincing but non-game combination.
-	for ve in _ve_candidates():
-		var got := _sky_from(str(ve))
-		if not got.is_empty():
-			_sky_cache = got
-			_say("game source: sky - %s, luminance scale %.0f"
-				% [str(ve).get_file(), got["luminance_scale"]])
-			return got
-	return {}
-
-
-func _sky_from(ve: String) -> Dictionary:
-	var raw := src.get_ebx(ve)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-
-	# THE PANORAMA IS AN IMPORT, NOT A FIELD VALUE. PanoramicTexture is present
-	# on the sky component and is NULL in the shipped data - the pointer is
-	# resolved at load - while SkyType and LuminanceScale beside it are set. So
-	# the texture is found the only way it can be: among the partition's
-	# imports, which name it directly.
-	var pano := _panorama_import(e)
-	if pano == "":
-		return {}
-	var tex = _texture_for_asset(pano)
-	if tex == null:
-		return {}
-	var img: Image = (tex as ImageTexture).get_image()
-	if img == null:
-		return {}
-
-	# The scalars DO come from the component, where they are real.
-	var lum := 0.0
-	var rot := 0.0
-	for i in range(e.instance_offsets.size()):
-		var inst = e.read_instance(i)
-		if not (inst is Dictionary) or not (inst as Dictionary).has(F_LUMINANCE_SCALE):
-			continue
-		var d: Dictionary = inst
-		lum = float(d.get(F_LUMINANCE_SCALE, 0.0))
-		rot = float(d.get(F_PANORAMIC_ROTATION, 0.0))
-		break
-	return {
-		"texture": ImageTexture.create_from_image(_to_equirect(img)),
-		"luminance_scale": lum,
-		"rotation": rot,
-		"preset": ve.get_file(),
-		"panorama": pano.get_file(),
-	}
-
-
-# The sky panorama among a VE partition's imports.
-#
-# Told apart by name, because that is what distinguishes them: the same
-# partition also imports hdrcube_<level>_NN (the reflection cubemap, not a sky)
-# and t_skypanoramicprocedural_b (a procedural fallback, not this level's
-# painted sky). Both would resolve and both would be wrong.
-func _panorama_import(e: BF6Ebx) -> String:
-	var best := ""
-	for imp in e.imports:
-		var t = walk.gi.get(str((imp as Dictionary)["partition"]))
-		if t == null:
-			continue
-		var n := str(t).to_lower()
-		if n.ends_with(".ebx"):
-			n = n.substr(0, n.length() - 4)
-		var leaf := n.get_file()
-		if not leaf.contains("panoramicsky"):
-			continue
-		if leaf.contains("procedural") or leaf.contains("hdrcube"):
-			continue
-		if leaf.contains(level):
-			return n              # this level's own sky wins outright
-		if best == "":
-			best = n
-	return best
-
-
-# Decode a texture by ASSET NAME rather than by guid. The panorama is reached
-# through the import list, which already gives the name.
+# Decode a texture by ASSET NAME rather than by guid, for callers that reach a
+# texture through an import list, which already gives the name.
 func _texture_for_asset(asset: String):
 	var an := asset.to_lower()
 	if an.ends_with(".ebx"):
@@ -5012,15 +4296,6 @@ func _texture_for_asset(asset: String):
 	return t
 
 
-var _sky_cache := {}
-
-
-# The active preset only. Kept as an Array for the existing sky loop.
-func _ve_candidates() -> Array:
-	var active := _active_ve()
-	return [active["path"]] if not active.is_empty() else []
-
-
 # A PointerRef's FILE guid, whichever shape the deserializer handed back.
 static func _ref_guid(v):
 	if v is Dictionary:
@@ -5029,29 +4304,6 @@ static func _ref_guid(v):
 			if d.has(k) and str(d[k]) != "":
 				return str(d[k])
 	return null
-
-
-# 4:1 sky-dome panorama -> the 2:1 equirect PanoramaSkyMaterial expects.
-#
-# Upper half is the panorama (zenith at the top, horizon at its bottom row);
-# lower half repeats the horizon row, so below the horizon reads as haze rather
-# than as a mirrored or stretched sky.
-static func _to_equirect(src_img: Image) -> Image:
-	var w := src_img.get_width()
-	var h := src_img.get_height()
-	if w <= 0 or h <= 0 or w < h * 3:
-		return src_img            # already 2:1-ish; leave it alone
-	var img := src_img.duplicate() as Image
-	if img.is_compressed() and img.decompress() != OK:
-		return src_img
-	var out := Image.create(w, h * 2, false, img.get_format())
-	out.blit_rect(img, Rect2i(0, 0, w, h), Vector2i(0, 0))
-	# The horizon row, carried down. Copied as a 1-pixel-tall strip per row
-	# rather than pixel by pixel: a 4096-wide sky is 4 million set_pixel calls
-	# otherwise, which is seconds of stall for a gradient nobody looks at.
-	for y in range(h, h * 2):
-		out.blit_rect(img, Rect2i(0, h - 1, w, 1), Vector2i(0, y))
-	return out
 
 
 # ---------------------------------------------------------------------------
@@ -5184,7 +4436,6 @@ const PORTAL_PREFIX := "pf_portal_"
 
 var _obj_walk: BF6Walk = null
 var _obj_cache := {}                   # portal name (lower) -> Mesh-bearing Node3D or null
-var _obj_lights := {}                  # portal name (lower) -> [light record], object-local
 
 
 # The prefab for a Portal object name, assembled, or null.
@@ -5297,7 +4548,6 @@ func object_rows(portal_name: String) -> Array:
 	var ref = _resolve_object(key)
 	if ref == null:
 		_obj_cache[key] = []
-		_obj_lights[key] = []
 		return []
 
 	# A SECOND WALKER, sharing the first's catalogue. build_catalog is the
@@ -5309,27 +4559,16 @@ func object_rows(portal_name: String) -> Array:
 		_obj_walk.by_name = walk.by_name
 		_obj_walk.gi = walk.gi
 		_obj_walk.scope_index = walk.scope_index
-		# A PLACED PROP'S OWN LIGHTS. This walker was built for meshes and asked
-		# for no entities, so a lamp dropped into a scene from the SDK arrived
-		# with its geometry and none of its lighting — not misplaced, absent.
-		# Collecting them costs the same pass; object_lights() is what reads them
-		# and nothing is built unless a caller asks.
-		for gd in LIGHT_TYPES:
-			_obj_walk.want_types[str(gd)] = "light"
-		# Kept in step with the level walk's collector set: a lamp fixture
-		# dropped into a scene carries the same embedded decal volume it
-		# carries on the map, and two walkers with different field lists is
-		# how one of them silently loses a collector later.
+		# The decal volumes, as the level walk collects them: a lamp fixture
+		# dropped into a scene carries the same embedded decal volume it carries
+		# on the map. No light entities: placed-prop lights went with the
+		# fork's Prop Lighting switch (F-08), and this walker is not cached.
 		for gd in EDV_TYPES:
 			_obj_walk.want_types[str(gd)] = "edv"
-		_obj_walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
+		_obj_walk.want_fields = EDV_FIELDS
 	_obj_walk.rows.clear()
 	_obj_walk.ents.clear()
 	_obj_walk.walk(str(ref), BF6Walk.IDENT, {}, 0)
-	# Read off the same pass, in the object's own local space, and cached beside
-	# the rows: object_rows is memoised, so a later object_lights() call would
-	# otherwise be looking at whichever object was assembled most recently.
-	_obj_lights[key] = _light_records(_obj_walk.ents)
 
 	var out: Array = []
 	for r in _obj_walk.rows:
@@ -5361,21 +4600,6 @@ func object_rows(portal_name: String) -> Array:
 			_group_meta[gk] = [res_name, scope, str(row.get("src", "")), vh]
 	_obj_cache[key] = out
 	return out
-
-
-# The light records a placed Portal object carries, in the object's own local
-# space, in the same schema as lights.json.
-#
-# Not wired into object_node(): whether a scene full of placed lamps should also
-# build thousands of Light3D nodes is a budget decision (Forward+ caps clustered
-# elements at 512 in view), not something a mesh assembler should decide on its
-# own. This is the data, ready for whatever does.
-func object_lights(portal_name: String) -> Array:
-	var key := portal_name.to_lower()
-	if not _obj_lights.has(key):
-		object_rows(portal_name)
-	var got = _obj_lights.get(key, [])
-	return got if got is Array else []
 
 
 # THE BUNDLE THAT SHIPPED THIS RESOURCE, which is what a depot is keyed on.
@@ -5859,13 +5083,6 @@ func release_caches() -> Dictionary:
 	_mesh_by_sig.clear()
 	_obj_cache.clear()
 	_depot_cache.clear()
-	_sky_cache.clear()
-	_active_ve_cache.clear()
-	_environment_cache.clear()
-	_zone_exposure_cache.clear()
-	_lighting_zones_cache.clear()
-	_lighting_zones_stats.clear()
-	_lighting_zones_done = false
 	_decal_tex_cache.clear()
 	# _dressed WAS MISSING, and it is the one that made the mesh half of this a
 	# lie. It holds [ArrayMesh, keys, scope, variation, name] for every mesh ever
@@ -5883,9 +5100,9 @@ func release_caches() -> Dictionary:
 	_litpack_cache.clear()
 	# THE TWO THAT MADE CLEARING THE OTHERS POINTLESS.
 	#
-	# _mat_by_look and _emissive_mats hold MATERIALS, and a material holds its
+	# _mat_by_look holds MATERIALS, and a material holds its
 	# textures. So dropping _tex_cache and _mat_cache above freed nothing at all
-	# while these still referenced the same objects: measured, release_caches
+	# while it (and the old emissive list) still referenced the same objects: measured, release_caches
 	# gave back 1,617 MB of a 4,379 MB build and the rest was here.
 	#
 	# Everything else on this list is the same mistake in smaller print - a
@@ -5893,7 +5110,6 @@ func release_caches() -> Dictionary:
 	# that empties it. Compiled from the member list rather than from memory,
 	# because that is how the first seven got missed.
 	_mat_by_look.clear()
-	_emissive_mats.clear()
 	_res_for.clear()
 	_var_live.clear()
 	_sec_keys.clear()
@@ -5901,7 +5117,6 @@ func release_caches() -> Dictionary:
 	_pal_canon_cache.clear()
 	_scatter_cache.clear()
 	_scatter_done = false
-	_obj_lights.clear()
 	_hm.clear()
 	# Windows will often hold the freed pages rather than returning them to the
 	# OS, so Task Manager can stay high while this genuinely worked. Judge it by
@@ -5993,7 +5208,6 @@ func cache_stats() -> Dictionary:
 		# freed by dropping the cache slot because the scene holds it too.
 		"materials_over_surfaces": maxi(0,
 			_mat_cache.size() - int(surfaces)),
-		"sky_entries": _sky_cache.size(),
 		# None of these caches evicts. Recorded so the number is not mistaken
 		# for a working set that would come back under pressure.
 		"evicts": false,
@@ -7457,7 +6671,6 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_tint_mask_cache.clear()
 	_decal_tex_cache.clear()
 	_smooth_cache.clear()
-	_emissive_mats.clear()
 	# THE ASSEMBLED-OBJECT CACHE, AND ESPECIALLY ITS FAILURES.
 	#
 	# object_rows caches a NOT-FOUND as an empty array, and nothing was clearing
@@ -7469,7 +6682,6 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	# It is derived from OUR name rules, not from the game, so it belongs here
 	# with the other things a code change invalidates.
 	_obj_cache.clear()
-	_obj_lights.clear()
 	_foliage_shader = null
 	_prop_tint_shader = null
 	# HELD SHADERS MUST BE DROPPED HERE OR AN EDIT TO ONE NEVER REACHES THE
@@ -8120,10 +7332,8 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	if emis != null:
 		mat.emission_enabled = true
 		mat.emission_texture = emis
-		# The same switch as the shader path, so a lamp does not depend on which
-		# material class it happened to take.
-		mat.emission_energy_multiplier = prop_emission
-		_emissive_mats.append(mat)
+		# As authored (multiplier 1.0). The Prop Lighting switch that used to
+		# drive this went with the fork's lighting removal (F-08).
 		any = true
 	if tint is Color:
 		# Applied UNIFORMLY, which is the honest approximation and not the whole
@@ -9117,42 +8327,6 @@ func _decal_sheet(file_guid, is_normal: bool):
 	return tex if varies else null
 
 
-# PROP LIGHTING, the emission half. Read by every material builder that binds an
-# emissive sheet. 1.0 is the sheet as authored; the panel raises it. Static so
-# the dock can set it and re-dress without threading it through every call.
-static var prop_emission := 1.0
-
-# EVERY MATERIAL THAT CARRIES A GLOW, so the switch can change one number on a
-# few dozen of them instead of rebuilding the map.
-#
-# Toggling Prop Lighting used to call invalidate_materials, which re-resolves
-# every surface from the depot: 13,097 surfaces, MEASURED AT 12.7 SECONDS in the
-# user's own log. All of that to change an emission multiplier - and only 53 of
-# 1,075 sampled records bind a lit sheet at all, so 99% of the work could not
-# change a pixel.
-#
-# The materials are shared between the map context and the props the builder
-# placed (both resolve through _mat_cache), so setting the parameter in place
-# updates everything at once with no rebuild and no re-dress.
-var _emissive_mats: Array = []
-
-
-# Returns how many materials it touched. Dead ones are dropped as they are found,
-# so a scene change does not leak them.
-func set_prop_emission(v: float) -> int:
-	prop_emission = v
-	var alive: Array = []
-	for m in _emissive_mats:
-		if not is_instance_valid(m):
-			continue
-		if m is ShaderMaterial:
-			(m as ShaderMaterial).set_shader_parameter("emission_energy", v)
-		elif m is StandardMaterial3D:
-			(m as StandardMaterial3D).emission_energy_multiplier = v
-		alive.append(m)
-	_emissive_mats = alive
-	return alive.size()
-
 var _smooth_cache := {}                # texture asset -> bool, does its alpha vary
 
 
@@ -9689,8 +8863,6 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
-		m.set_shader_parameter("emission_energy", prop_emission)
-		_emissive_mats.append(m)
 	return m
 
 
@@ -9721,8 +8893,6 @@ func _smooth_material(slots: Dictionary, tint):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
-		m.set_shader_parameter("emission_energy", prop_emission)
-		_emissive_mats.append(m)
 	# Uniform, as the plain path applies it: the per-texel paint mask is the
 	# masked-tint path above and is a separate decision from smoothness.
 	if tint is Color:
