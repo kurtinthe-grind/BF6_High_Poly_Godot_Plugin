@@ -56,7 +56,10 @@ def run_gd_tests(godot: str, only: str, timeout: float) -> int:
         subprocess.run([godot, "--headless", "--path", str(proj), "--import"],
                        capture_output=True, text=True, timeout=timeout)
         for t in tests:
+            # --quit-after: a script error inside _init skips its quit(), and a
+            # SceneTree with nothing to do would otherwise idle until timeout.
             r = subprocess.run([godot, "--headless", "--path", str(proj),
+                                "--quit-after", "600",
                                 "--script", f"res://forktests/{t.name}"],
                                capture_output=True, text=True, timeout=timeout)
             out = (r.stdout or "") + (r.stderr or "")
