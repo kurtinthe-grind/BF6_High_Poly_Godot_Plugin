@@ -11,7 +11,8 @@ extends VBoxContainer
 #   2. map index    - each map's mount index, partition index and placement walk
 #                     (headless worker processes, a few at a time). Geometry is
 #                     read from the game cache, so no meshes are written.
-#   3. previews     - object library icons (rendered by the editor).
+#   3. previews     - retired in the fork (F-04): the Object Library keeps its
+#                     stock icons. The stage still exists and ends at once.
 #
 # Invalidation: the game cache is keyed by the installation identity and the core
 # recipe; stale keys are swept on open. Map indexes are keyed by identity plus the
@@ -28,8 +29,9 @@ const JOBS := "user://highpoly/preparation_jobs"
 const FORMAT := 3
 const POLL_SECONDS := 0.25
 # Stage weights for the overall bar. Measured: the game cache is ~8 minutes for a
-# full install; mesh preparation is the longest; previews are comparatively quick.
-const WEIGHTS := {"core": 0.35, "geometry": 0.50, "previews": 0.15}
+# full install; mesh preparation is the longest. Previews are no longer rendered
+# (fork F-04); the key stays at 0 because _overall() still reads it.
+const WEIGHTS := {"core": 0.40, "geometry": 0.60, "previews": 0.0}
 const INDEX_SECONDS_GUESS := 12.0   # a map's first index, until one has been measured
 enum Stage { IDLE, CHECKING, CORE, GEOMETRY, PREVIEWS, READY, PAUSED, FAILED }
 
@@ -107,12 +109,12 @@ func _ready() -> void:
 	add_child(_bar)
 	_resume = Button.new()
 	_resume.text = "Resume caching"
-	_resume.tooltip_text = "High Poly unlocks once every map, its meshes and the object previews are cached."
+	_resume.tooltip_text = "High Poly unlocks once every map and its meshes are cached."
 	_resume.pressed.connect(func(): resume())
 	add_child(_resume)
 	_show = Button.new()
 	_show.text = "Show caching progress"
-	_show.tooltip_text = "Open the caching screen: every map's game cache and index, object previews and overall progress."
+	_show.tooltip_text = "Open the caching screen: every map's game cache and index and overall progress."
 	_show.pressed.connect(func(): show_progress())
 	add_child(_show)
 	_record = Cache.read_record(RECORD)

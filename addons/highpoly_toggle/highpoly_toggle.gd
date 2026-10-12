@@ -63,7 +63,6 @@ const LIGHTING_TIP_NONE := "This map has no lighting data yet, so there is \
 nothing to switch on. Everything else in this panel still works."
 
 const BJournal = preload("highpoly_journal.gd")
-const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
 # Only ever used to ASSIGN statics. Reads and calls go through HighpolyLib as
@@ -97,7 +96,6 @@ const SharedMenu = preload("highpoly_menu.gd")
 const Backdrop = preload("highpoly_backdrop.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
-var previews: Node
 var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
@@ -374,9 +372,6 @@ func _build_bf6_gate() -> void:
 	_preparation = Preparation.new()
 	_preparation.foreground_owner = func(): return EditorInterface.get_base_control()
 	_preparation.popup_deferred = func(): return _panel_suppressed()
-	_preparation.previews_missing = _previews_missing_for_cache
-	_preparation.previews_run = _run_previews_for_cache
-	_preparation.previews_cancel = _cancel_previews_for_cache
 	# High Poly stays locked until the up-front cache is complete.
 	_preparation.ready_changed.connect(func(_is_ready: bool): _apply_bf6_gate())
 	_preparation.editing_lock_changed.connect(func(locked: bool):
@@ -858,9 +853,6 @@ All of it is read from your own Battlefield 6 installation."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
 	_gate(ovr_chk, "Previewing a selection in High-Poly")
-
-	# Object library icons are rendered by the up-front cache (highpoly_preparation.gd),
-	# not by a button: see _run_previews_for_cache.
 
 	host = _section("collision", "Collision",
 		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
@@ -1941,6 +1933,7 @@ All of it is read from your own Battlefield 6 installation."
 	# renders at full rate forever, including while it sits behind a running
 	# game competing for the same GPU. Repaired once, then never again.
 	HighpolySleepPark.restore_pending()
+	_sweep_icon_cache()
 	# Same contract for the "draw when unfocused" chip: if a session died with
 	# it on, put the throttle back rather than leaving the editor rendering
 	# flat out in the background forever.
@@ -1974,10 +1967,6 @@ All of it is read from your own Battlefield 6 installation."
 		profiler = ProfilerScript.new()
 	profiler.name = "HighpolyProfiler"
 	dock.add_child(profiler)
-	previews = _take_service("previews")
-	if previews == null:
-		previews = PreviewsScript.new()
-	dock.add_child(previews)
 	mapctx = _take_service("mapctx")
 	if mapctx == null:
 		mapctx = MapContextScript.new()
@@ -2056,9 +2045,6 @@ All of it is read from your own Battlefield 6 installation."
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
 		if _sr != null: mapctx.apply_shader_prefs(_sr)
-		# The icons are rendered from the same prop meshes the build just wrote,
-		# so this is the moment they can stop being the SDK blockout.
-		if previews: previews.rescan_context()
 		# AND THE VARIANT ROW, which could not have been filled before now.
 		#
 		# It lists the layers the map's own placements carry, and it was only
@@ -2242,7 +2228,6 @@ All of it is read from your own Battlefield 6 installation."
 	# every session starts safe: the rung that downloads nothing, until a mode is
 	# chosen. _restore_mapctx_state moves off it if the open map was left higher.
 	mode_btn.select(mode_btn.get_item_index(MODE_SDK))
-	previews.tier = HighpolyLib.Tier.LOW
 	_refresh_gates()
 
 	# auto-overlay for pieces placed while a detail mode is active
@@ -2584,7 +2569,6 @@ func _exit_tree() -> void:
 		_soft_reopen = false     # one reopen, not every disable from here on
 		_kept["ui"] = _capture_ui()
 		_keep_service("mapctx", mapctx)
-		_keep_service("previews", previews)
 		_keep_service("profiler", profiler)
 		_keep_service("jobs", jobs)
 		Log.hook(Callable())     # never call into a freed panel
@@ -2626,7 +2610,6 @@ func _exit_tree() -> void:
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.restore(r)                             # overlays off, SDK proxies back
-	if previews: previews.shutdown()                       # SDK's own icons back
 	Log.hook(Callable())         # never call into a freed panel
 	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
 	if tools_btn:
@@ -2841,9 +2824,6 @@ func _apply_ui(d: Dictionary) -> void:
 	var m := int(d.get("mode", -1))
 	if mode_btn != null and m >= 0:
 		mode_btn.select(mode_btn.get_item_index(m))
-		if previews != null:
-			previews.tier = _mode()
-			previews.textured = _textured()
 	var rg := float(d.get("range", -1.0))
 	if mapctx_range != null and rg >= 0.0:
 		mapctx_range.set_value_no_signal(rg)
@@ -2922,9 +2902,9 @@ func _ui_chips() -> Array:
 #
 #   * the scene is left exactly as it is. Nothing is restored, because nothing is
 #     going away: the same plugin is coming straight back.
-#   * the long-lived services (the map context, the previews, the recorder, the
-#     job queue) are handed across rather than rebuilt. They hold the open game
-#     source, the cell index, the icon cache - state that costs minutes to
+#   * the long-lived services (the map context, the recorder, the job queue)
+#     are handed across rather than rebuilt. They hold the open game source and
+#     the cell index - state that costs minutes to
 #     rebuild and nothing to keep.
 #
 # They are kept by REPARENTING them out of the dock before it is freed, into the
@@ -2973,6 +2953,21 @@ func _take_service(name: String) -> Node:
 	if n.get_parent() != null:
 		n.get_parent().remove_child(n)
 	return n
+
+
+# The Object Library icon renderer is gone (fork F-04). Its PNG cache in
+# user://highpoly/thumbs is read by nothing any more, and on the owner's
+# machine 666 of its 1,539 files were the same corrupt render (HP-016).
+func _sweep_icon_cache() -> void:
+	var dir := "user://highpoly/thumbs"
+	if not DirAccess.dir_exists_absolute(dir):
+		return
+	var n := 0
+	for f in DirAccess.get_files_at(dir):
+		if DirAccess.remove_absolute(dir.path_join(f)) == OK:
+			n += 1
+	DirAccess.remove_absolute(dir)
+	Log.info("Removed the old Object Library icon cache (%d file(s))." % n)
 
 
 # The version in plugin.cfg. The self-updater that used to report it is gone.
@@ -3924,10 +3919,9 @@ func _do_reset() -> void:
 	# and their saved toggle state would be stranded describing data that is gone
 	var maps_before: Array = MapContextScript.cached_maps()
 	var freed: int = await mapctx.purge_everything()
-	# both stores are gone: forget the map-context index and every icon rendered
-	# from it, or the library keeps offering stand-ins for deleted files
+	# both stores are gone: forget the map-context index, or the library keeps
+	# offering stand-ins for deleted files
 	HighpolyStore.ctx_scan(true)
-	if previews: previews.rescan_context()
 
 	# AND DROP THE OPEN READER, which is what made Reset a half-measure.
 	#
@@ -3951,7 +3945,6 @@ func _do_reset() -> void:
 
 	# --- panel back to defaults ---
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
-	if previews: previews.tier = HighpolyLib.Tier.LOW
 	_refresh_gates()      # back on the rung that downloads nothing: grey them again
 	for b in [mapctx_on, mapctx_objects, mapctx_fx, mapctx_light, col_chk,
 			iso_chk, ovr_chk]:
@@ -3995,11 +3988,10 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	storage_lbl.text = "Purging %s…" % map
 	await mapctx.purge_map(map, info)
 	# The purge can delete map-context meshes the LIBRARY was being served from
-	# (a name held by only one store is owned by both systems). Re-index, drop the
-	# icons rendered from what is gone, and re-apply so anything that lost its
-	# stand-in falls back to the SDK proxy and queues the real model.
+	# (a name held by only one store is owned by both systems). Re-index and
+	# re-apply so anything that lost its stand-in falls back to the SDK proxy and
+	# queues the real model.
 	HighpolyStore.ctx_scan(true)
-	if previews: previews.rescan_context()
 	if EditorInterface.get_edited_scene_root() != null:
 		await _apply_scene()
 	lbl.text = "%s purged. About %s freed; it rebuilds from your game install on demand." % [map,
@@ -4025,7 +4017,6 @@ func _check_scene_change() -> void:
 		HighpolyLib.restore(old)                              # overlays off, SDK proxies back
 	# reset the dock to default for the newly-active scene (programmatic, no rebuild)
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
-	if previews: previews.tier = HighpolyLib.Tier.LOW
 	_refresh_gates()      # the new scene starts on the rung that downloads nothing
 	_override.clear()
 	if ovr_chk:
@@ -5194,10 +5185,8 @@ func _upgrade_catalogue_async(gs) -> void:
 	HighpolyVitals.crumb("idle, nothing building")
 	if not gs.catalogue_ready:
 		return
-	# Icons and placed objects that could not resolve from the level's archives
-	# alone can resolve now, and nothing may keep the old answer.
-	if previews != null:
-		previews.clear_cache()
+	# Placed objects that could not resolve from the level's archives alone can
+	# resolve now.
 	Log.info("the placeable catalogue is ready: objects from other maps can be "
 		+ "drawn now")
 
@@ -5383,8 +5372,6 @@ func _mode_changed() -> void:
 	if ovr_chk:
 		ovr_chk.set_pressed_no_signal(false)
 		ovr_chk.text = _override_label()
-	previews.tier = _mode()
-	previews.textured = _textured()
 	# BEFORE _apply_scene, not after: the apply is what asks the library for a
 	# model per prop, and with no game source open every one of those asks
 	# returns nothing. Awaiting here means the first switch to High-Poly in a
@@ -5594,34 +5581,6 @@ func _reoverride_selection() -> void:
 # normal click/drag selection and camera behavior stay untouched.
 var prop_light_on: Button = null
 var _said_not_map := ""              # scene we have already explained is not a map
-
-
-# Object library icons, rendered as the last stage of the up-front cache. The
-# supervisor owns the screen and progress; this supplies the renderer, which needs
-# the install open in the icon's detail mode.
-func _previews_missing_for_cache() -> int:
-	return previews.missing_count() if previews != null else 0
-
-func _run_previews_for_cache(progress: Callable) -> Dictionary:
-	BJournal.event("ui", "cache: object previews")
-	if previews == null:
-		return {"total": 0, "rendered": 0, "cancelled": false}
-	if previews.building:
-		return {"error": "a preview build is already running"}
-	await _ensure_source_for_mode(true)
-	if previews == null:
-		return {"error": "the preview renderer closed"}
-	var res: Dictionary = await previews.build_all(progress)
-	if not res.has("error"):
-		HighpolyLog.info(("Object previews: %d rendered, %d already cached, %d have nothing "
-			+ "to draw them from - %.1f s%s") % [int(res["rendered"]),
-			int(res["already_cached"]), int(res["no_source"]), float(res["seconds"]),
-			"  (stopped early)" if bool(res["cancelled"]) else ""])
-	return res
-
-func _cancel_previews_for_cache() -> void:
-	if previews != null and previews.building:
-		previews.cancel_build = true
 
 
 # ONE SWITCH, BOTH HALVES. The fixtures are Light3D children of each overlay and

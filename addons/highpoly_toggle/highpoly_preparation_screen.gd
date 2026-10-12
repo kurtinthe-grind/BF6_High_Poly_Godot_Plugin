@@ -31,7 +31,6 @@ var _host: Window
 const STAGES := [
 	["core", "Game cache", "Map placements, mesh and texture references, terrain and water for every map. Shared with the Unreal plugin."],
 	["geometry", "Map index", "Each map's placements and archive index, so maps open without scanning the game."],
-	["previews", "Object previews", "Icons for every object in the library."],
 ]
 
 # Worker phases (preparation.json) still describe the per-map mesh report.
@@ -259,10 +258,6 @@ func refresh(snapshot: Dictionary) -> void:
 	var geometry_done := bool(snapshot.get("geometry_done", false))
 	var geometry := float(snapshot.get("geometry", 0.0))
 	_set_stage("geometry", geometry, "Done" if geometry_done else (_percent(geometry) if stage == "GEOMETRY" or geometry > 0.0 else "Waiting"))
-	var previews_total := int(snapshot.get("previews_total", 0))
-	var previews_done := int(snapshot.get("previews_done", 0))
-	var previews_value := 1.0 if bool(snapshot.get("ready", false)) else (float(previews_done) / previews_total if previews_total > 0 else 0.0)
-	_set_stage("previews", previews_value, "Done" if bool(snapshot.get("ready", false)) else ("%d / %d" % [previews_done, previews_total] if stage == "PREVIEWS" else "Waiting"))
 	var line := str(snapshot.get("core_line", ""))
 	_activity.text = line if not line.is_empty() else str(snapshot.get("message", ""))
 	_summary.text = str(snapshot.get("error", "")) if stage in ["FAILED"] else ("Paused. High Poly stays locked until caching finishes." if stage == "PAUSED" else "")

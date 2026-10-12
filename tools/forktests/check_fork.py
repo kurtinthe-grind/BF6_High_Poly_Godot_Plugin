@@ -34,11 +34,20 @@ RULES: dict[str, dict] = {
                    r"\b_reopen_panel\b", r"\b_check_plugin_update\b",
                    r"\b_do_plugin_update\b", r"api\.github\.com"],
     },
+    "F-04": {
+        "absent": ["highpoly_previews.gd"],
+        "forbid": [r"\bPreviewsScript\b", r"\bHighpolyPreviews\b",
+                   r"\bpreviews\.(tier|textured|rescan_context|clear_cache|shutdown|build_all|missing_count|building|cancel_build)\b",
+                   r"_previews_missing_for_cache", r"_run_previews_for_cache",
+                   r"_cancel_previews_for_cache", r"\"Object previews\"",
+                   r"_keep_service\(\"previews\"", r"_take_service\(\"previews\""],
+    },
 }
 
 ENABLED: list[str] = [
     "F-05a",
     "F-03",
+    "F-04",
 ]
 
 

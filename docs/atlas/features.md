@@ -64,6 +64,8 @@ Data flow: dock "Drop marker"/note-Enter → `camera_point(dist=12.0)` :57 (12 m
 `class_name HighpolyPlacedCull`. Distance-culls the USER's placed objects via `visibility_range_*` (serialized! remembers and restores). Control = `mapctx_optimize` toggle:1216 pressed=true visible=false. LOD handover requires Tier.LOW :203. `release` :69, `apply(root, r, on)` :115. `SKIP` :24 deliberately excludes `_HIPOLY_PREVIEW` (culled with its object). Exemption ext > 600 m; bands r / 0.6r / 0.35r at 12 m / 3 m; floor 40.
 
 ## highpoly_previews.gd (602)
+> Removed in the fork (F-04); the Object Library keeps its stock icons.
+
 `class_name HighpolyPreviews`, Node, dock service. Object Library thumbnails rendered in an off-screen SubViewport, cached `user://highpoly/thumbs/<Name>__<mode>.png`. `build_all(progress)` :528 — **the model progress consumer: takes a Callable, owns no UI**. Perf history baked in comments (find_children walk was the plugin's biggest instrumented cost → `_lists_cache` :174).
 
 ## highpoly_rsprops.gd (216) — OFF
