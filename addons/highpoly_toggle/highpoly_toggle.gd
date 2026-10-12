@@ -2139,6 +2139,10 @@ All of it is read from your own Battlefield 6 installation."
 
 	# auto-overlay for pieces placed while a detail mode is active
 	get_tree().node_added.connect(_on_node_added)
+	# The tab switch itself, not the next half-second tick: until the outgoing
+	# scene is handed back it still carries hidden assets and draw distances,
+	# and a Save All in that window would write them.
+	scene_changed.connect(_on_scene_changed)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
 	# door toggling + variant cycling need viewport clicks even with nothing
@@ -2461,6 +2465,8 @@ func _exit_tree() -> void:
 	HighpolyProfile.set_enabled(false)
 	if get_tree().node_added.is_connected(_on_node_added):
 		get_tree().node_added.disconnect(_on_node_added)
+	if scene_changed.is_connected(_on_scene_changed):
+		scene_changed.disconnect(_on_scene_changed)
 	var esel := EditorInterface.get_selection()
 	if esel.selection_changed.is_connected(_on_selection_changed):
 		esel.selection_changed.disconnect(_on_selection_changed)
@@ -3813,6 +3819,12 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	lbl.text = "%s purged. About %s freed; it rebuilds from your game install on demand." % [map,
 		_human_size(int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)))]
 	_refresh_storage()
+
+# EditorPlugin.scene_changed, connected in _enter_tree. The heartbeat still
+# calls _check_scene_change as a backstop; it returns at once when the root
+# has not changed.
+func _on_scene_changed(_root: Node) -> void:
+	_check_scene_change()
 
 # When the user switches scene tabs, tear down our heavy owner=null overlays on
 # the scene we're LEAVING (Map Context = tens of thousands of nodes; high-poly =
