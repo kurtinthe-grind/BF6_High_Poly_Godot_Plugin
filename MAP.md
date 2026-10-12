@@ -124,11 +124,10 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 | Prop geometry | `gs.mesh_for(group_key, lod)` | parsing MeshSets directly |
 | Materials | `gs.material_for` / `gs._material_any` | building StandardMaterial3D ad hoc |
 | GLB at runtime | `HighpolyStore.load_external_glb` | GLTFDocument inline |
-| One Light3D | `HighpolyLighting.make_light(L)` | per-site construction |
 | mkdir | `HighpolyStore.ensure_dir` | raw DirAccess |
 | Overlay membership test | `HighpolyLib.in_overlay(node)` + `HP_NODE`/`COL_NODE`/`NODE` consts | a fifth spelling of the skip set |
 | Ray vs AABB | `HighpolyLib._ray_aabb` | another slab test |
-| Orphan-proof layer clear | the name-`contains` sweep, canonical in `HighpolyFx.clear` (fx:104) | `get_node_or_null` (misses orphaned twins) |
+| Orphan-proof layer clear | the name-`contains` sweep (was canonical in `HighpolyFx.clear`, removed in the fork, F-08) | `get_node_or_null` (misses orphaned twins) |
 | Epoch reads | `HighpolyGameSource.geom_epoch()` | the const (folds) |
 | Machine-readable event | `HighpolyLog.event(ev, d, lvl, cid)` → events.jsonl | a second log file |
 | "Where am I" snapshot | `HighpolyLog.write_state(d)` from the dock heartbeat | polling from outside |
@@ -174,7 +173,7 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 
 ### Features → atlas/features.md
 - decalproject (641) road-decal projector (receiver shapes + stats contract)
-- lighting (1,390) sun/sky/env/zones/fixtures · fx (877) live emitters · water (306, **removed in the fork, F-07**)
+- lighting (1,390) sun/sky/env/zones/fixtures · fx (877) live emitters (both **removed in the fork, F-08**) · water (306, **removed in the fork, F-07**)
 - markers (417) fault markers (report = the point) · gamemode (495) + gmmine (513)
 - scatter (808) ground scatter · bctex (498) texture sidecars + pool
 - hlod (617) OFF · rsprops (216) OFF · occluders (128) OFF · placedcull (324) on-hidden

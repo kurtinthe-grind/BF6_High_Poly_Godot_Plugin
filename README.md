@@ -105,10 +105,8 @@ the streaming tree, roads and terrain decals, lights, water, the distant
 skyline, the vegetation scatter from the game's own clutter catalogue, and the
 sky from the level's own VisualEnvironment.
 
-**Effects.** FX flipbooks decode out of the install through a new AtlasTexture
-decoder, with the grid read from EBX rather than assumed. Emitters get the
-spawn rate, size, spread and lifetime the game actually authors, sprite
-emitters get billboards and volume decals get real `Decal` nodes.
+**Effects.** Removed in the fork (F-08): no FX emitters or smoke cards are
+drawn. Volume decals still get real `Decal` nodes.
 
 **Gameplay markers keep the SDK proxy.** The fork removed the soldier, weapon,
 loadout and vehicle previews (F-05b); spawners show the SDK's own markers.
@@ -187,9 +185,9 @@ extracted out of the game:
 | **Backdrops** | The distant skyline and out-of-bounds scenery: bridges, city facades, hills a kilometre or more out. Off by default because it is heavy and sits well outside the area you build in. Draws whether or not the extended terrain is on. |
 | **Water** | Removed in the fork (F-07): the map's own SDK water plane always shows. |
 | **Original map objects** | The game's original per-object placements — buildings, vehicles, props — instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and returns exactly as you left it. Appearance follows Detail Mode; distance follows Range. |
-| **Prop Lighting** | The lights a placed prop carries in the game, plus the glow on its bulbs, screens and lit signs. Both come from the level's own data. |
+| **Prop Lighting** | Removed in the fork (F-08). Emissive sheets draw as authored; no prop light fixtures are added. |
 | **Grass** | Vegetation scatter from the game's own clutter catalogue, placed procedurally around the editor camera, with a density slider (1.0 = the catalogue's budget). |
-| **Range** | The one distance that governs everything: how far the borrowed scenery, its effects and its lights keep drawing, and how far your own placed pieces keep drawing. At zero the borrowed scenery switches off entirely, leaving just your map. |
+| **Range** | The one distance that governs everything: how far the borrowed scenery keeps drawing, and how far your own placed pieces keep drawing. At zero the borrowed scenery switches off entirely, leaving just your map. |
 | **Terrain** | Terrain mesh density (Full 1 m / High 2 m / Medium 4 m). Built once per level, then cached. |
 
 Trees and bushes render with proper leaf transparency, honouring the game's
@@ -199,14 +197,10 @@ There is nothing to press after a game patch. The plugin reads the installed
 game, so a patched map is simply the map it reads next time you open it.
 
 ### Lighting
-The level's own lighting, plus the one control that is deliberately not
-faithful:
-
-| Control | What it does |
-|---|---|
-| **Lighting** | Sun angle, exposure, sky, fog and cloud shadows read from the level's own VisualEnvironment, so the light matches the real map rather than Godot's default. |
-| **Shadows** | Sun shadows. Bounded by a radius around the camera and a minimum caster size, so buildings and vehicles cast while small props do not. Costs frame rate; switch it off if the view gets choppy. |
-| **Interior light** | Lifts the darkest areas — inside buildings, under bridges, the shadowed side of a wall — so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. |
+Removed in the fork (F-08): no Lighting, Contact shading, Shadows, Interior
+light, Map lights or Map and prop lights controls. The editor's own preview
+sun and environment light the scene; overlays 1.5 m and larger cast shadows
+under it. **Ground photo** stays, in the Map Context chip row.
 
 ### Storage and Log
 **Storage** reports what the read cache is using on disk and can open the
