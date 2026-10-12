@@ -599,7 +599,11 @@ func build_report() -> PackedStringArray:
 		# either because the readahead had everything ready or because it was
 		# never consulted, and those want opposite fixes.
 		["    of which the readahead had ready", 0, n_precache_textures,
-			"decoded", FROM_CACHE],
+			"decoded", FROM_MEMORY],
+		["tex: served from the texture pack", t_texpack_load, n_texpack_hits,
+			"textures", FROM_CACHE],
+		["tex: saved to the texture pack", 0, n_texpack_saved,
+			"textures", FROM_WRITE],
 		["  tex: compress + mipmaps", t_tex_post, int(tex_stats.get("decoded", 0)),
 			"decoded", FROM_MIXED],
 		["  tex: upload to the GPU", t_tex_up, int(tex_stats.get("decoded", 0)),
@@ -1528,6 +1532,7 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			"%d light entities" % walk.ents.size())
 	t = Time.get_ticks_msec()
 	_geom_open()
+	_texpack_open()
 	# The geometry cache directory carries GEOM_EPOCH, so a bump orphans every
 	# mesh on disk and the next open is cold no matter how many times the map has
 	# been built. Recorded here rather than left to be discovered from a build
@@ -6727,6 +6732,80 @@ func flush_packs() -> void:
 		HighpolyLog.info(line)
 
 
+# ---------------------------------------------------------------------------
+# THE TEXTURE PACK (OPT-02).
+#
+# Textures had no disk cache at all: every texture not already in this
+# session's memory was read from CAS, Oodle-decompressed, maybe compressed and
+# uploaded - 3.4 ms each, 12-13 s per Isolated objects build, on every build.
+# The image the build would have uploaded (capped, compressed, mipmapped) now
+# goes into a per-map pack, so a later build reads one record and uploads it.
+#
+# KEYED ON EVERYTHING THAT CHANGES THE PIXELS: the TOC signature (a game
+# patch), the texture family recipe (the decoder), TEXPACK_VERSION (bump on any
+# change to the post-decode steps in texture_named), the texture cap and the
+# VRAM mode. Not on the whole add-on recipe.
+const TEXPACK_VERSION := 1
+const TEXPACK_ROOT := "user://bf6_tex"
+
+
+static func texpack_dir_name(level_name: String, sig: String, recipe: String, cap: int,
+		vram: int) -> String:
+	var k := "%s|%s|%d|%d|%d" % [sig, recipe, TEXPACK_VERSION, cap, vram]
+	return "%s_%s" % [level_name, k.sha256_text().substr(0, 16)]
+
+
+func _texpack_open() -> void:
+	if _tex_pack != null:
+		_tex_pack.close()
+		_tex_pack = null
+	if not geom_cache or src == null or level == "" or record_textures:
+		return
+	var sig := src.signature()
+	var recipe: String = preload("highpoly_install_cache.gd").family_recipe("textures")
+	if sig == "" or recipe == "":
+		return
+	_texpack_use_dir(TEXPACK_ROOT.path_join(texpack_dir_name(level, sig, recipe,
+		texture_max_dim, int(HighpolyMapContext.vram_mode))))
+
+
+func _texpack_use_dir(d: String) -> void:
+	if _tex_pack != null:
+		_tex_pack.close()
+		_tex_pack = null
+	var pk = Pack.new()
+	var t := Time.get_ticks_msec()
+	var n: int = pk.open(d, d.get_file(), TEXPACK_VERSION)
+	if pk.dir == "":
+		return
+	_tex_pack = pk
+	_say("texture pack %s: %d texture(s) on disk, opened in %d ms%s" % [d.get_file(), n,
+		Time.get_ticks_msec() - t, (", %d damaged segment(s) dropped" % pk.bad_segments)
+			if pk.bad_segments > 0 else ""])
+
+
+func _texpack_fetch(an: String):
+	if _tex_pack == null or preload("highpoly_install_cache.gd").bypass:
+		return null
+	var t := Time.get_ticks_usec()
+	var bytes: PackedByteArray = _tex_pack.get_bytes(an)
+	if bytes.is_empty():
+		return null
+	var img: Image = Pack.decode_image(bytes)
+	t_texpack_load += Time.get_ticks_usec() - t
+	if img == null:
+		return null
+	n_texpack_hits += 1
+	return img
+
+
+func _texpack_store(an: String, img: Image) -> void:
+	if _tex_pack == null or img == null or img.is_empty():
+		return
+	if _tex_pack.put(an, Pack.encode_image(img)):
+		n_texpack_saved += 1
+
+
 # What the panel shows for a map: meshes and textures in its newest packs.
 static func pack_info(level_name: String) -> Dictionary:
 	return {"geom": _newest_pack_count("user://bf6_geom", level_name),
@@ -9236,6 +9315,16 @@ func texture_named(asset: String, is_normal := false, cap := -1):
 			_placeholder_tex = ImageTexture.create_from_image(Image.create(4, 4, false, Image.FORMAT_RGBA8))
 		_tex_cache[an] = _placeholder_tex
 		return _placeholder_tex
+	# THE TEXTURE PACK FIRST (OPT-02): an image this map's earlier build already
+	# decoded, capped and compressed is one read and an upload.
+	var _tpk = _texpack_fetch(an)
+	if _tpk is Image:
+		var _tu0 := Time.get_ticks_usec()
+		var pt := ImageTexture.create_from_image(_tpk as Image)
+		t_tex_up += Time.get_ticks_usec() - _tu0
+		_tex_cache[an] = pt
+		tex_stats["pack_hits"] = int(tex_stats.get("pack_hits", 0)) + 1
+		return pt
 	# EVERYTHING FROM HERE IS THE TEXTURE COST, and it is timed as one block
 	# because that is how it is paid: a miss reads the resource, decodes it,
 	# maybe compresses it and uploads it, and there is no useful place to stop
@@ -9350,6 +9439,7 @@ func texture_named(asset: String, is_normal := false, cap := -1):
 			and img.get_width() >= 4 and img.get_height() >= 4:
 		img.generate_mipmaps()
 	t_tex_post += Time.get_ticks_usec() - _tp
+	_texpack_store(an, img)        # for the next build of this map (OPT-02)
 	# THE UPLOAD ON ITS OWN. This is the one that hands work to the render
 	# thread, so if the texture cost is really a sync rather than a computation
 	# it shows up here and nowhere else.

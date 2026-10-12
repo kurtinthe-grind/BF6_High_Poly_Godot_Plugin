@@ -324,6 +324,8 @@ func _build_bf6_gate() -> void:
 		return str(references[0]) if references.size() == 1 else ""
 	# Two processes indexing one map at once would race on the same index
 	# files, so a read already running in this editor wins.
+	_preparation.pack_info = func(level: String) -> Dictionary:
+		return HighpolyGameSource.pack_info(level)
 	_preparation.busy_reason = func() -> String:
 		return "The map is being read right now; press Cache this map once it finishes." \
 			if (_gs_opening or _read_worker_busy) else ""
@@ -3195,7 +3197,9 @@ func _refresh_storage() -> void:
 	# deciding whether to delete something.
 	var geom: Array = await mapctx.dir_usage_async("user://bf6_geom")
 	if gen != _storage_gen: return
-	var total := int(props[1]) + maps_bytes + int(geom[1])
+	var texp: Array = await mapctx.dir_usage_async("user://bf6_tex")
+	if gen != _storage_gen: return
+	var total := int(props[1]) + maps_bytes + int(geom[1]) + int(texp[1])
 	# One plain sentence, then a line per thing, in the words a map builder would
 	# use. The old single line packed all of this into one dense string that
 	# never actually said what any of it was.
@@ -3204,8 +3208,10 @@ func _refresh_storage() -> void:
 		% [_fmt_n(int(props[0])), _human_size(int(props[1]))])
 	lines.append("  Levels read from your game: %s  (%s)"
 		% [_fmt_n(nmaps), _human_size(maps_bytes)])
-	lines.append("  Meshes prepared for reuse: %s  (%s)"
+	lines.append("  Geometry packs (meshes kept for the next build): %s  (%s)"
 		% [_fmt_n(int(geom[0])), _human_size(int(geom[1]))])
+	lines.append("  Texture packs (textures kept for the next build): %s  (%s)"
+		% [_fmt_n(int(texp[0])), _human_size(int(texp[1]))])
 	storage_lbl.text = "\n".join(lines)
 
 func _reload_purge_options() -> void:

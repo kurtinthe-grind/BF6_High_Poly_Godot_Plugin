@@ -5073,11 +5073,12 @@ func purge_map(map: String, info: Dictionary) -> void:
 func _map_reader_caches(map: String) -> Array:
 	var lvl := map.to_lower()
 	var out: Array = []
-	var da := DirAccess.open("user://bf6_geom")
-	if da != null:
-		for sub in da.get_directories():
-			if str(sub).to_lower().begins_with(lvl + "_"):
-				out.append("user://bf6_geom/%s/" % str(sub))
+	for pack_root in ["user://bf6_geom", "user://bf6_tex"]:
+		var da := DirAccess.open(pack_root)
+		if da != null:
+			for sub in da.get_directories():
+				if str(sub).to_lower().begins_with(lvl + "_"):
+					out.append("%s/%s/" % [pack_root, str(sub)])
 	var root := DirAccess.open("user://")
 	if root != null:
 		for f in root.get_files():
@@ -5091,7 +5092,7 @@ const READER_CACHE_DIR := "user://bf6_geom"
 
 
 static func reader_cache_files() -> Array:
-	var out: Array = ["user://bf6_geom"]
+	var out: Array = ["user://bf6_geom", "user://bf6_tex"]
 	var da := DirAccess.open("user://")
 	if da != null:
 		for f in da.get_files():

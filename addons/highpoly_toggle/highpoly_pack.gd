@@ -346,3 +346,38 @@ static func decode_mesh(bytes: PackedByteArray) -> ArrayMesh:
 		am.add_surface_from_arrays(prim, arrays)
 		am.surface_set_name(am.get_surface_count() - 1, sname)
 	return am if at == size else null
+
+
+# ---------------------------------------------------------------------------
+# IMAGE CODEC, for the texture pack: the decoded, capped, compressed image the
+# build would have uploaded, so a hit is one read + create_from_data.
+#   u32 format, u32 width, u32 height, u32 mipmaps, u64 length, data
+const MAX_DIM := 16384
+
+static func encode_image(img: Image) -> PackedByteArray:
+	var data := img.get_data()
+	var sp := StreamPeerBuffer.new()
+	sp.put_u32(int(img.get_format()))
+	sp.put_u32(img.get_width())
+	sp.put_u32(img.get_height())
+	sp.put_u32(1 if img.has_mipmaps() else 0)
+	sp.put_u64(data.size())
+	sp.put_data(data)
+	return sp.data_array
+
+
+static func decode_image(bytes: PackedByteArray) -> Image:
+	if bytes.size() < 24:
+		return null
+	var fmt := int(bytes.decode_u32(0))
+	var w := int(bytes.decode_u32(4))
+	var h := int(bytes.decode_u32(8))
+	var mips := int(bytes.decode_u32(12))
+	var n := int(bytes.decode_u64(16))
+	if fmt < 0 or fmt >= Image.FORMAT_MAX or w <= 0 or h <= 0 or w > MAX_DIM or h > MAX_DIM \
+			or mips > 1 or n <= 0 or 24 + n != bytes.size():
+		return null
+	var img := Image.create_from_data(w, h, mips == 1, fmt, bytes.slice(24))
+	if img == null or img.is_empty():
+		return null
+	return img
