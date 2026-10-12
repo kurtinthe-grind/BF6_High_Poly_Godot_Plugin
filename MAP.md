@@ -170,6 +170,8 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 - highpoly_diagnose (826) pick/inspect engine · highpoly_census (834) scene pricing
 - highpoly_flightrun (1,548) THE bench · highpoly_autorun (1,327) legacy bench (~60% duplicate) — both **removed in the fork (F-05a)**
 - highpoly_flightpath (112) camera recorder (**removed in the fork, F-05a**) · highpoly_gamedir (158) install discovery
+- bf6_plugin_menu (285) shared "BF6" menu bar + radial — **removed in the fork (UI-01)**; the panel is a permanent dock tab (UI-02)
+- highpoly_preparation_screen (295) launch-time cover screen — **removed in the fork (C-01)**; highpoly_pack (new) per-map geometry/texture packs
 
 ### Features → atlas/features.md
 - decalproject (641) road-decal projector (receiver shapes + stats contract)
@@ -261,7 +263,17 @@ Single-layer path with no teardown: `ensure_layer()` (6013).
 - Session log: `user://highpoly-session.log` — locked `.tmp` while the editor
   runs; flushes on clean exit. Crash trail: `user://highpoly/breadcrumbs.txt`.
 - Build journal: `user://highpoly/build_journal.txt`.
-- Geometry cache: `user://bf6_geom/<level>_<sig>_g<EPOCH><lod><vram>/`.
+- Geometry pack: `user://bf6_geom/<level>_<sig>_g<EPOCH><lod><vram>/seg_*.hpk`
+  (highpoly_pack.gd segments; was one .res per mesh, unused under the precache
+  and wiped at launch until `feature/ui-dock-caching`, OPT-01).
+- Texture pack: `user://bf6_tex/<level>_<key16>/seg_*.hpk` (OPT-02; key = TOC
+  signature, textures family recipe, TEXPACK_VERSION, texture cap, VRAM mode).
+- Native heightfield: `user://mapcontext/<map>/height_game.r16` + `height_native.json`
+  (read back on a key match, OPT-05).
+- Cache keys: per family (`highpoly_install_cache.gd` FAMILIES: texture_order,
+  env, heightfield, splat, textures), not the whole add-on (OPT-03/04).
+- On-demand caching: `highpoly_preparation.gd` caches the open map only, from
+  the panel's "Cache this map" (record `user://highpoly/preparation.json`).
 - Map caches: `user://mapcontext/<map>/`.
 
 ### The machine-readable set (readable WHILE the editor runs)
