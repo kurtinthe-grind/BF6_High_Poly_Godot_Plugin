@@ -22,9 +22,15 @@ SHARED_MENU = REPO / "shared" / "menu"
 SCANNED = (".gd", ".json", ".gdshader", ".cfg")
 
 RULES: dict[str, dict] = {
+    "F-05a": {
+        "absent": ["highpoly_autorun.gd", "highpoly_flightrun.gd", "highpoly_flightpath.gd"],
+        "forbid": [r"\bHighpolyAutorun\b", r"\bHighpolyFlightRun\b", r"\bHighpolyFlightPath\b",
+                   r"\bFlightPath\.", r"Record flight path", r"BF6_AUTORUN", r"BF6_PERFRUN"],
+    },
 }
 
 ENABLED: list[str] = [
+    "F-05a",
 ]
 
 

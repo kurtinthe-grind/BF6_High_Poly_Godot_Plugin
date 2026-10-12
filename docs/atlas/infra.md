@@ -74,6 +74,8 @@ Duplicates: `_ray_box` ≡ `HighpolyLib._ray_aabb`; `_collect` another walk.
 `class_name HighpolyCensus`, static; one addon caller (flightrun:625 `take(croot)`). Prices the scene as the GPU charges: surfaces, distinct materials/shaders, casting surfaces × MEASURED cascades (`_directional_cascades` :454), dedup recovery, reconciliation vs the engine draw counter. `report()/lines()` :676/:689 reachable only from tools/. Third scene-walk implementation exists in autorun `_surface_census` :902.
 
 ## highpoly_flightrun.gd (1548) — ★ THE bench harness
+> Removed in the fork (F-05a); its sleep-setting repair lives on in `highpoly_sleeppark.gd`.
+
 `class_name HighpolyFlightRun`, static; only preloads Log (deliberate isolation). Entry toggle:2169: `BF6_PERFRUN` env (path to session JSON or bare tag). Inert when unset. Driven externally by `tools/perfrun.py`.
 Phases: scan :208 → open :247 → dock_sync :300 → configure :315 → build :356 → assert :485 → settle :535 → flight :597 → census :622 → hlod probe/ab :643/:684.
 Asserted rules (:26-38): culling OFF (`NO_CULL_SLIDER 3500`, `mapctx.radius == 1e8` :1111-1126 — failure aborts); headline = `frames_under_60` + 1% low, never the mean (`MS_60/MS_30` absolute :67-68). Refuses headless (:201-206).
@@ -81,6 +83,8 @@ Outputs: report `cfg["out"]` default `user://perfrun_<map>_<tag>.json` :163 (**N
 `_summarise` :832-939: frames_under_60/30, fps_1pct_low, worst_ms(+where), stationary-vs-moving stutter split, draw peaks, full per-frame arrays.
 
 ## highpoly_flightpath.gd (112)
+> Removed in the fork (F-05a).
+
 `class_name HighpolyFlightPath`, static. Records editor camera at 20 Hz → `user://bf6_flightpath_<map>.json` (basis as 9 floats). `start` :39, `stop` :58, `MAX_SAMPLES` 20*60*10. Two consumers parse it with two different parsers (flightrun:1395, autorun:1246).
 
 ## highpoly_gamedir.gd (158)
@@ -92,6 +96,8 @@ Catalogue: `rescan_objects/known/_match_key/match_key_public/scene_keys` :106-22
 Duplication: the "skip our own overlays" predicate inline ×6 while `in_overlay()` exists; 9 stack-walks with the same skeleton; `_ray_aabb` ≡ diagnose `_ray_box`.
 
 ## highpoly_autorun.gd (1327)
+> Removed in the fork (F-05a).
+
 `class_name HighpolyAutorun`, static; `BF6_AUTORUN` env; **~60% duplicate of flightrun** (17 functions duplicated, 5 verbatim: `_scene_for/_find_scene/_windows/_engine/_say`). Unique value: the layer sweep :610-717 (per-layer off + re-fly + delta, incl. engine-floor rows), foliage screenshot :1163, build-rate sampler `_rate` :736. Neither harness is deprecated in code.
 
 ## Cross-file observations

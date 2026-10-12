@@ -72,7 +72,6 @@ const MapContextScript = preload("highpoly_mapcontext.gd")
 const LibScript = preload("highpoly_lib.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
-const FlightPath = preload("highpoly_flightpath.gd")
 const GameDir = preload("highpoly_gamedir.gd")
 const Preparation = preload("highpoly_preparation.gd")
 var _preparation: VBoxContainer
@@ -1421,31 +1420,6 @@ All of it is read from your own Battlefield 6 installation."
 		for k in (_sp as Dictionary):
 			HighpolyMapContext.shader_prefs[k] = _sp[k]
 
-	var storage_chips := _chip_row(host)
-
-	# --- Record flight path (developer tool) --------------------------------
-	# Records the editor camera at 20 Hz so a benchmark can fly the SAME route
-	# afterwards. Every rendering measurement before this used a static camera,
-	# which cannot answer "did that change make flying smoother" — the only
-	# question that actually matters. Recording the route you fly captures the
-	# places that are actually slow, rather than a synthetic orbit.
-	var flight_chk := Theme_.chip("Record flight path")
-	flight_chk.tooltip_text = "Developer tool. Records where you fly so the same route can be replayed and timed. Switch it on, fly the part of the map that feels slow, switch it off — it saves a file and tells you where it went."
-	flight_chk.toggled.connect(func(v: bool):
-		if v:
-			var mapn: String = str(mapctx._map) if mapctx != null else ""
-			if FlightPath.start(self, mapn if mapn != "" else "unknown"):
-				lbl.text = "Recording. Fly the parts that feel slow, then switch this off."
-			else:
-				flight_chk.set_pressed_no_signal(false)
-				lbl.text = "Could not start recording: no 3D viewport camera found."
-		else:
-			var n: int = FlightPath.sample_count()
-			var p: String = FlightPath.stop()
-			lbl.text = ("Flight path saved: %d samples at %s" % [n, p]) if p != "" \
-					else "Nothing recorded — the camera never moved.")
-	storage_chips.add_child(flight_chk)
-
 	# The game folder moved to the TOP of the panel. It is the precondition
 	# for everything the plugin does, not a storage setting, and two places to
 	# set one path is one place to set it wrong. See _build_bf6_gate.
@@ -1986,12 +1960,12 @@ All of it is read from your own Battlefield 6 installation."
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
 	HighpolyUpdater.sweep_removed()   # clear out what an older version left behind
-	# Undo what a KILLED bench run left in the user's editor settings. The
-	# flight zeroes both idle sleeps so it measures a cost rather than a cap,
-	# and perfrun force-kills the editor on hang, crash or timeout - after
-	# which the editor renders at full rate forever, including while it sits
-	# behind a running game competing for the same GPU. Nothing said so.
-	HighpolyFlightRun.restore_pending()
+	# Undo what a KILLED bench run left in the user's editor settings. The bench
+	# harness is gone from the fork, but an older install that ran it may have
+	# left a park file with both idle sleeps at 0 - after which the editor
+	# renders at full rate forever, including while it sits behind a running
+	# game competing for the same GPU. Repaired once, then never again.
+	HighpolySleepPark.restore_pending()
 	# Same contract for the "draw when unfocused" chip: if a session died with
 	# it on, put the throttle back rather than leaving the editor rendering
 	# flat out in the background forever.
@@ -2507,7 +2481,7 @@ func _set_unfocused_drawing(on: bool) -> void:
 	var es := EditorInterface.get_editor_settings()
 	if es == null:
 		return
-	var k := HighpolyFlightRun.K_SLEEP_UNFOCUSED
+	var k := HighpolySleepPark.K_SLEEP_UNFOCUSED
 	if on:
 		var was: int = int(es.get_setting(k)) if es.has_setting(k) \
 			else UNFOCUS_DEFAULT
@@ -2544,7 +2518,7 @@ func _restore_unfocused_pending(announce := false) -> bool:
 	if es == null or not (v is Dictionary):
 		return false
 	var back: int = int((v as Dictionary).get("unfocused", UNFOCUS_DEFAULT))
-	es.set_setting(HighpolyFlightRun.K_SLEEP_UNFOCUSED, back)
+	es.set_setting(HighpolySleepPark.K_SLEEP_UNFOCUSED, back)
 	if announce:
 		Log.info("background drawing off: the editor throttles to %d us "
 			% back + "between frames again when it is not focused.")
@@ -2736,22 +2710,6 @@ func _exit_tree() -> void:
 
 # ---------- startup ----------
 func _startup() -> void:
-	# UNATTENDED SESSIONS, when the environment asks for one. Both run the real
-	# dock path over the real scene and quit with a report, which is the only way
-	# to measure what a user actually experiences — a bench that loads the same
-	# meshes into a bare tree measures a different world.
-	#
-	# Checked FIRST and returning: an unattended run has nobody at the keyboard.
-
-	# The performance run (tools/perfrun.py) is tested before the autorun because
-	# the two configure the dock differently, and a stale BF6_AUTORUN left in the
-	# environment must not shadow a perf run that was explicitly asked for.
-	if HighpolyFlightRun.requested():
-		HighpolyFlightRun.run(self, dock, mapctx)
-		return
-	if HighpolyAutorun.requested():
-		HighpolyAutorun.run(self, dock, mapctx)
-		return
 	_apply_open_scene()
 
 # Draw the open scene with whatever Detail Mode we start in.

@@ -119,7 +119,7 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 | Stall-detector context | `HighpolyVitals.crumb(what)` (+`IDLE` prefix when done) | — |
 | Long-loop "still going" | `HighpolyVitals.tick_long(what, done, total)` | — |
 | Worker count | `HighpolyVitals.work_tasks(items)` | hardcoded thread counts |
-| Benching | flight harness (`BF6_PERFRUN` + tools/perfrun.py) | eyeballing fps |
+| Benching | flight harness (`BF6_PERFRUN` + tools/perfrun.py) — **removed in the fork (F-05a)** | eyeballing fps |
 | Texture from the install | `gs._texture_for(guid, is_normal, cap)` | a second loader |
 | Depot access | `gs._depot_for(scope)` | walking `_depot_bundles` |
 | Prop geometry | `gs.mesh_for(group_key, lod)` | parsing MeshSets directly |
@@ -170,8 +170,8 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 - highpoly_reload (454) staged deploy / hot reload / cold swap · highpoly_updater (478) GitHub self-update
 - highpoly_store (589) GLB loader + thumbs (+dead index) · highpoly_lib (982) overlay apply + shared vocabulary (HP_NODE…)
 - highpoly_diagnose (826) pick/inspect engine · highpoly_census (834) scene pricing
-- highpoly_flightrun (1,548) THE bench · highpoly_autorun (1,327) legacy bench (~60% duplicate)
-- highpoly_flightpath (112) camera recorder · highpoly_gamedir (158) install discovery
+- highpoly_flightrun (1,548) THE bench · highpoly_autorun (1,327) legacy bench (~60% duplicate) — both **removed in the fork (F-05a)**
+- highpoly_flightpath (112) camera recorder (**removed in the fork, F-05a**) · highpoly_gamedir (158) install discovery
 
 ### Features → atlas/features.md
 - decalproject (641) road-decal projector (receiver shapes + stats contract)

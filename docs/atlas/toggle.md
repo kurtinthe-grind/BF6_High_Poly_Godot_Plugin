@@ -83,7 +83,7 @@ The ONLY ProgressBar in the addon (grep-verified; the other hits are `highpoly_t
 EditorSettings project metadata: `highpoly/shape_outlines` L816/L3084; `highpoly/open_sections` L3136/L3140; `highpoly/tools_seen` L3357; `highpoly_mapctx/<MAP>` 19-key dict L4320-4353 (dead keys: `maptile`, `optimize`, `_mesh_cache`); `highpoly_mapctx/_shaders` L4206/L1315; `_perf_applied2` L4156.
 ProjectSettings (one-shot, L4150): mesh LOD threshold 4.0, thread_model 2, directional shadow 2048.
 Editor layout ConfigFile: `HighPoly/win_rect|win_open|docked` L3363-3377.
-Env vars: `BF6_MESH_TRACE`, `BF6_PERFRUN` (flightrun), `BF6_AUTORUN`.
+Env vars: `BF6_MESH_TRACE`, `BF6_PERFRUN` (flightrun), `BF6_AUTORUN`. The fork removed the two harnesses (F-05a), so only `BF6_MESH_TRACE` is read now.
 Statics mirrored: `LibScript.detail/build_epoch/game_source`, `MapContextScript.mesh_cache_enabled/colormap_*/show_fx_cards`, `LightingScript.lights_range/interior_fill/prop_lighting/game_source`, `GameSourceScript.prop_emission`, `mapctx.want_lights/want_fx/job_queue/status_label`.
 
 ## Cross-script const reads (fold hazards)
