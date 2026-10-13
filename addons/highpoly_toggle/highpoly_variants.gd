@@ -11,9 +11,10 @@ extends RefCounted
 # present) only to ORDER the cycle: variants that appear on the CURRENT map
 # come first, the rest alphabetically.
 #
-# The active variant is remembered per INSTANCE (HighpolyLib.VARIANT_META node
-# metadata), so two buses can wear different liveries, and Low-Poly ->
-# High-Poly round trips restore the same variant. Each swap replaces the whole
+# The active variant is remembered per INSTANCE (HighpolyLib.VARIANT_META in
+# HighpolyInstanceState, never node metadata - that would be saved into the
+# .tscn), so two buses can wear different liveries, and Low-Poly -> High-Poly
+# round trips restore the same variant for the rest of the editor session. Each swap replaces the whole
 # overlay subtree — variant GLBs are full standalone models (destroyed shells
 # can differ in geometry).
 
@@ -162,7 +163,7 @@ static func cycle(node: Node3D, key: String) -> Dictionary:
 					"msg": "%s: fetching %d variant(s)…" % [key, decl.size()]}
 		return {}
 	# position in the ring [base, names...]
-	var cur := String(node.get_meta(HighpolyLib.VARIANT_META, ""))
+	var cur := String(HighpolyInstanceState.get_value(node, HighpolyLib.VARIANT_META, ""))
 	var idx := 0
 	if cur != "":
 		var f := names.find(cur)
@@ -170,10 +171,10 @@ static func cycle(node: Node3D, key: String) -> Dictionary:
 	var total := names.size() + 1
 	var nxt := (idx + 1) % total
 	var vname := "" if nxt == 0 else names[nxt - 1]
-	node.set_meta(HighpolyLib.VARIANT_META, vname)
+	HighpolyInstanceState.set_value(node, HighpolyLib.VARIANT_META, vname)
 	# apply_one sees the changed asset id and replaces the WHOLE overlay subtree
 	if not HighpolyLib.apply_one(node, key, HighpolyLib.Tier.HIGH, textured):
-		node.set_meta(HighpolyLib.VARIANT_META, cur)  # bad file: stay on the working one
+		HighpolyInstanceState.set_value(node, HighpolyLib.VARIANT_META, cur)  # bad file: stay on the working one
 		HighpolyLib.apply_one(node, key, HighpolyLib.Tier.HIGH, textured)
 		return {"node": node, "ok": false,
 				"msg": "%s: variant '%s' failed to load" % [key, vname]}

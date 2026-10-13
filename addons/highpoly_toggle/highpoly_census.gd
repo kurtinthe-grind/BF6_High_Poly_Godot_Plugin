@@ -77,10 +77,6 @@ const Prof = preload("highpoly_profiler.gd")
 const ROOTS := {
 	"_SCATTER": "grass scatter",
 	"_MAP_CONTEXT": "map context",
-	"_MAP_FX": "fx",
-	"_MAP_LIGHTS": "map lights",
-	"_HP_PROP_LIGHTS": "prop light fixtures",
-	"_GAME_LIGHTING": "game lighting",
 	"_OCCLUDERS": "occluders",
 	"_GAMEMODE": "gamemode markers",
 	"_HP_MARKERS": "your notes",
@@ -94,19 +90,16 @@ const ROOTS := {
 const PARTS := {
 	"Terrain": "terrain",
 	"Roads": "roads",
-	"Water": "water",
 	"Backdrop": "skyline",
 	"Props": "props",
 	"_SCATTER": "grass scatter",
-	"FXCards": "fx cards",
 }
 
 # Labels that are still "inside the map context", so a PARTS name found under
-# them promotes. FXCards lives under Props or under Backdrop depending on which
-# builder made it, so the promotion has to survive one level of nesting.
+# them promotes.
 const PART_FAMILY := {
-	"map context": true, "terrain": true, "roads": true, "water": true,
-	"skyline": true, "props": true, "fx cards": true, "grass scatter": true,
+	"map context": true, "terrain": true, "roads": true,
+	"skyline": true, "props": true, "grass scatter": true,
 }
 
 # Fallback buckets for anything not under one of our roots.

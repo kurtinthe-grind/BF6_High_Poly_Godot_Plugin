@@ -48,6 +48,10 @@ static var _crumb := "starting up"
 static var _crumb_at := 0
 static var _crumb_is_idle := false
 static var _crumb_lock := Mutex.new()
+# Long jobs that are still running (OPT-14). An inner call that stamps "idle"
+# while one of these is open gets the job's label instead, so a freeze in the
+# middle of the swap is no longer reported as "idle, nothing building".
+static var _jobs: Array = []
 
 static var _peak_static := 0.0
 static var _peak_static_at := ""
@@ -155,8 +159,27 @@ static func set_settings_probe(c: Callable) -> void: _settings_probe = c
 # heartbeat below relies on it to tell "gone quiet mid-phase" (worth a line)
 # from "finished and waiting for you" (not).
 const IDLE := "idle"
+static func job_begin(what: String) -> void:
+	_crumb_lock.lock()
+	_jobs.append(what)
+	_crumb_lock.unlock()
+	crumb(what)
+
+
+static func job_end(what: String) -> void:
+	_crumb_lock.lock()
+	var i := _jobs.rfind(what)
+	if i >= 0:
+		_jobs.remove_at(i)
+	var top: String = _jobs.back() if not _jobs.is_empty() else ""
+	_crumb_lock.unlock()
+	crumb(top if not top.is_empty() else "idle, nothing building")
+
+
 static func crumb(what: String) -> void:
 	_crumb_lock.lock()
+	if what.begins_with(IDLE) and not _jobs.is_empty():
+		what = str(_jobs.back())
 	_crumb_is_idle = what.begins_with(IDLE)
 	# Only a CHANGE restarts the clock. These are called once per tile and per
 	# mesh with the same label, and resetting on every call would make the age
@@ -188,6 +211,19 @@ static func crumb_age_ms() -> int:
 	var at := _crumb_at
 	_crumb_lock.unlock()
 	return Time.get_ticks_msec() - at if at > 0 else 0
+
+
+# ONE PLACED OBJECT THAT HOLDS THE MAIN THREAD FOR A SECOND OR MORE. The swap
+# job checks its time budget only between objects, so a single slow build is
+# a freeze nothing can interrupt; the name is what tells you which asset.
+const SLOW_ITEM_MS := 1000
+
+static func report_slow(what: String, ms: int) -> bool:
+	if ms < SLOW_ITEM_MS:
+		return false
+	HighpolyLog.warn("placed object %s took %s to swap in, on the main thread"
+		% [what, HighpolyLog.human_ms(ms)])
+	return true
 
 
 # A "still going" line from INSIDE a long main-thread loop.

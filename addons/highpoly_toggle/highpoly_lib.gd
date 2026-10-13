@@ -11,12 +11,6 @@ class_name HighpolyLib
 # swaps them in automatically as they land. `use_legacy` keeps the exact 1.4
 # res://highpoly behavior alive for installs that haven't migrated yet.
 
-# The one place a Light3D is built, shared with the level's own lights so a
-# placed lamp and a level lamp cannot disagree about energy, cone or aim.
-const LightScript = preload("highpoly_lighting.gd")
-# The loot spawner loadout (item and attachments), from the shared core.
-const LoadoutScript := preload("highpoly_loadout.gd")
-
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
 # Render layer 19: "this geometry already has its real textures". Shared with the
@@ -148,16 +142,6 @@ static func _match_key(node: Node, ks: Dictionary) -> String:
 			return ""
 		var base := sfp.get_file().get_basename()
 		if ks.has(base): return base
-		# The spawner proxies answer for themselves. known() is a scan of
-		# res://objects/*.tscn and these two are in it, but making the soldier
-		# depend on that scan having run adds a failure mode with no upside:
-		# the key is fixed and we know it.
-		if HighpolySoldier.faction_for(base) != "": return base
-		if HighpolyWeapon.weapon_for(base) != "": return base
-		# And the vehicles, for the same reason: they live under
-		# res://objects/gameplay/vehicles/ rather than in the props scan, so
-		# known() does not carry them and the key has to answer for itself.
-		if base.begins_with("VEH_"): return base
 		# AN INSTANCE ANSWERS FOR ITSELF, AND IS NEVER GUESSED AT BY ITS NAME.
 		#
 		# This used to fall through to the node-name rules below when the scene's
@@ -250,6 +234,47 @@ static func restore(root: Node) -> int:
 			if c.name != HP_NODE:
 				stack.append(c)
 	return count
+
+
+# restore(), for the save guard: the same walk, but it returns the proxies whose
+# overlay was SHOWING, so the guard can put back exactly those and nothing
+# else. An overlay hidden before the save (Low-Poly, the per-selection
+# override) must still be hidden after it.
+static func restore_visible(root: Node) -> Array:
+	var out: Array = []
+	if root == null: return out
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node.name == "_MAP_CONTEXT" or node.name == COL_NODE:
+			continue
+		if node is Node3D:
+			var hp := node.get_node_or_null(HP_NODE)
+			if hp != null and hp is Node3D:
+				if (hp as Node3D).visible:
+					out.append(node)
+				_show_proxy_only(node as Node3D)
+		for c in node.get_children():
+			if c.name != HP_NODE:
+				stack.append(c)
+	return out
+
+
+# The other half: the overlay back on, the proxy drawing nothing again. No
+# rebuild, no re-fit, no re-dress - the overlay never left its parent and its
+# materials were never touched, so two flags per prop is the whole cost.
+static func reshow(nodes: Array, scene_root: Node) -> int:
+	var n := 0
+	for node in nodes:
+		if not is_instance_valid(node) or not (node is Node3D):
+			continue
+		var hp := (node as Node3D).get_node_or_null(HP_NODE)
+		if hp == null or not (hp is Node3D):
+			continue
+		(hp as Node3D).visible = true
+		_set_proxy_visible(node as Node3D, false, scene_root)
+		n += 1
+	return n
 
 # Hide our overlay, reveal the SDK proxy underneath. The overlay is left parented
 # rather than freed so that switching back does not re-instantiate and re-fit
@@ -354,86 +379,17 @@ static func _asset_id(key: String) -> String:
 	# never represent.
 	if game_source != null and game_source.has_object(key):
 		return "game://%s" % key
-	# GAMEPLAY SPAWNERS HAVE NO MESH BLUEPRINT - they are pure spawn logic, so
-	# has_object never answers for them and they keep the SDK's placeholder.
-	# What they spawn is a character, and characters assemble at identity out of
-	# the character library instead.
-	if game_source != null:
-		var fac := HighpolySoldier.faction_for(key)
-		if fac != "":
-			return "soldier://%s" % fac
-		var wep := HighpolyWeapon.weapon_for(key)
-		if wep != "":
-			return "weapon://%s" % wep
-		# AND THE VEHICLES, which had no route at all: every Portal vehicle
-		# shares one generic spawner blueprint, so has_object never answers for
-		# them and a placed VEH_* kept its proxy for ever. Their geometry lives
-		# in the hardware library under its own name, same as a weapon's.
-		if str(key).begins_with("VEH_"):
-			var veh := HighpolyVehicle.vehicle_for(game_source, key)
-			if veh != "":
-				return "vehicle://%s" % key
-			var why := HighpolyVehicle.unresolved_reason(key)
-			if why != "":
-				# Keeps the proxy AND says why, rather than looking like the
-				# overlay silently failed.
-				HighpolyLog.info("%s keeps its SDK model: %s" % [key, why])
 	return ""
 
 static func _instance_for(key: String, id: String) -> Node3D:
 	if id.begins_with("variant://"):
 		var vs := variant_scene(id.trim_prefix("variant://"))
 		return vs.instantiate() as Node3D if vs != null else null
-	if id.begins_with("soldier://"):
-		var what := id.trim_prefix("soldier://")
-		if what.begins_with("{"):
-			var request: Variant = JSON.parse_string(what)
-			var built: Dictionary = LoadoutScript.build_soldier(game_source,
-				request if request is Dictionary else {})
-			if str(built.get("error", "")) == "":
-				return built.node
-			HighpolyLog.info("%s keeps its SDK model: %s" % [key, built.error])
-			return null
-		return HighpolySoldier.build(game_source, what)
-	if id.begins_with("weapon://"):
-		return HighpolyWeapon.build(game_source, id.trim_prefix("weapon://"))
-	if id.begins_with("loadout://"):
-		var request := id.trim_prefix("loadout://")
-		var values := {"item": request.get_slice("|", 0)}
-		for fit in request.get_slice("|", 1).split(",", false):
-			values["attachment_" + fit.get_slice("=", 0)] = fit.get_slice("=", 1)
-		var built: Dictionary = LoadoutScript.build_weapon(game_source, values)
-		if str(built.get("error", "")) != "":
-			HighpolyLog.info("%s keeps its SDK model: %s" % [key, built.error])
-			return null
-		return built.node
-	if id.begins_with("vehicle://"):
-		return HighpolyVehicle.build(game_source, id.trim_prefix("vehicle://"))
 	if id.begins_with("game://"):
 		if game_source == null:
 			return null
 		var gkey := id.trim_prefix("game://")
 		var gnode: Node3D = game_source.object_node(gkey)
-		# THE FIXTURES INSIDE THE PREFAB, not only its meshes.
-		#
-		# A lamp used to arrive with its geometry and none of its lighting, which
-		# is a stranger result than it sounds: the bulb is there, lit by nothing,
-		# so the prop reads as broken rather than as unlit. The records come from
-		# the same walk and the same builder the level's own lights use, so a
-		# placed lamp and a level lamp are the same fixture.
-		#
-		# Capped inside attach_prop_lights: Forward+ stops at 512 clustered
-		# lights in view, and a lined street would pass that without the builder
-		# doing anything unreasonable.
-		# NOT ATTACHED HERE ANY MORE. The fixtures hang off a scene-level holder
-		# so they stay out of the prop's selection box, which means the call needs
-		# the PROXY node - and this function only has the assembled geometry. The
-		# records ride along on the node and apply_one, which does know the proxy,
-		# places them.
-		if gnode != null and game_source.has_method("object_lights"):
-			var recs: Array = game_source.object_lights(gkey)
-			if not recs.is_empty():
-				gnode.set_meta("hp_light_recs", recs)
 		return gnode
 	var res = load(id)
 	if res is PackedScene:
@@ -446,21 +402,6 @@ static func _instance_for(key: String, id: String) -> Node3D:
 
 static func _nofit_for(key: String) -> bool:
 	if key in NOFIT: return true
-	# THE SOLDIERS MUST NOT BE FITTED, and this is what was actually stopping
-	# them. The fitter scales an overlay onto its proxy's box and VETOES the
-	# pairing when the shapes disagree - "wrong-shaped asset: keep the proxy" -
-	# which is right for a prop standing in for a prop. A spawner's proxy is a
-	# small marker and the soldier is a 1.86 m figure, so the veto fired every
-	# time: the soldier was built correctly, measured against a marker, and
-	# thrown away. Nothing in the resolution chain was wrong, which is why
-	# checking that chain twice found nothing.
-	#
-	# The soldier is not a model OF the marker, it is a figure at its real size
-	# standing where the spawn happens, so the proxy's box has no claim on it.
-	if HighpolySoldier.faction_for(key) != "": return true
-	# and the weapon, for the same reason: a rifle is not the shape of the
-	# pickup marker it stands on, so the fitter's veto has no claim on it
-	if HighpolyWeapon.weapon_for(key) != "": return true
 	# NOR ANYTHING READ OUT OF THE GAME, which is now every prop.
 	#
 	# The fitter predates the install reader. It existed because models arrived
@@ -497,9 +438,6 @@ static func _nofit_for(key: String) -> bool:
 	# to the wrong asset is a bug in the resolution chain, to be fixed there,
 	# not something a bounding box should be papering over.
 	if game_source != null and game_source.has_object(key): return true
-	# A vehicle is not the shape of its SDK stand-in either, and it comes from
-	# the game with the game's transform. Same reasoning as the soldier's.
-	if str(key).begins_with("VEH_"): return true
 	if use_legacy:
 		var side := "%s/%s/%s.json" % [LEGACY_DIR, key, key]
 		if FileAccess.file_exists(side):
@@ -573,23 +511,11 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 	# per-instance variant selection (double-click cycling, highpoly_variants.gd):
 	# the chosen variant GLB replaces the base model for this node only. A stale
 	# selection whose file is gone falls back to the base silently.
-	var vname := String(node.get_meta(VARIANT_META, ""))
+	var vname := String(HighpolyInstanceState.get_value(node, VARIANT_META, ""))
 	if vname != "":
 		var vpath := variant_path(key, vname)
 		if vpath != "":
 			id = "variant://%s" % vpath
-	# A LOOT SPAWNER DRAWS ITS OWN CHOICE. The loadout on the node (item and
-	# attachments, see HighpolyLoadout) is part of the asset identity, so
-	# choosing a different weapon or attachment rebuilds the overlay.
-	if id.begins_with("weapon://") and LoadoutScript.core_for(game_source) != null:
-		id = "loadout://" + LoadoutScript.request_key(node)
-	# AND A SOLDIER SPAWNER DRAWS ITS OWN SOLDIER: operator, outfit, side, pose and
-	# weapon from the node's choices, posed and armed by the shared core exactly
-	# as Unreal draws it. A reader without the call keeps the static soldier.
-	if id.begins_with("soldier://"):
-		var core := LoadoutScript.core_for(game_source)
-		if core != null and core.has_method("loadout_soldier"):
-			id = "soldier://" + LoadoutScript.soldier_key(node)
 	var hp := node.get_node_or_null(HP_NODE)
 	# THE FITTER'S ANSWER IS BAKED INTO THE OVERLAY'S TRANSFORM, so an overlay
 	# built under an older fitting rule keeps that older answer forever: the
@@ -614,10 +540,6 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)
 		child.owner = null                   # editor-only: not saved, not exported
-		# The fixtures this prop carries, placed OUTSIDE it so its selection box
-		# stays the size of its geometry. See HighpolyLighting.attach_prop_lights.
-		if child.has_meta("hp_light_recs"):
-			LightScript.attach_prop_lights(node, child.get_meta("hp_light_recs"))
 		# variants skip the fitter: they are published pre-aligned to the base
 		# model's frame, and destroyed/partial variants LEGITIMATELY disagree
 		# with the proxy AABB (the fitter would wrongly veto them)
@@ -625,22 +547,35 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 				and not _nofit_for(key) and not _fit_scale(node, child):
 			node.remove_child(child); child.queue_free()
 			return false                     # wrong-shaped asset: keep the proxy
-		if id.begins_with("loadout://"):
-			# Unreal's alignment: real weapon scale and orientation, the
-			# weapon's bounds centred on the marker's, in the marker's space.
-			var marker := _merged_aabb(node, HP_NODE)
-			var weapon := _merged_aabb(child, "")
-			if marker.size.length() > 0.001 and weapon.size.length() > 0.001:
-				child.position = marker.get_center() - weapon.get_center()
 		hp = child
 	(hp as Node3D).visible = true
 	_set_textured(hp, textured)
 	_set_proxy_visible(node, false)
 	return true
 
+# THE SHADOW RULE for everything the plugin draws over the scene, read by the
+# placed overlays here and by the map context's props (highpoly_mapcontext,
+# _build_mmi and the cell shadow pass). It used to live with the game-lighting
+# rig and follow its Shadows checkbox; the fork removed both (F-08), so this is
+# the default that checkbox shipped with: big things cast under the editor's
+# own preview sun, litter does not. Not set by the panel; a test may change it.
+static var cast_shadows := true
+# The atlas cost is per CASTER, not per square metre, so a bottle books the same
+# slot as a tower and returns a few pixels for it. A car is ~4.5 m and a
+# building far more; both clear this, a crate lid does not.
+static var shadow_min_size := 1.5
+
+# WHAT AN OVERLAY WAS LAST DRESSED WITH. Everything _set_textured decides comes
+# from these three values, so an overlay already dressed under the same three
+# needs nothing - and skipping it is what makes a repeat swap pass (after a
+# save, a mode flip, a selection override) cost a lookup per prop instead of a
+# walk of every mesh in every overlay.
+static func dress_key(textured: bool) -> String:
+	return "%s|%s|%s" % [textured, cast_shadows, shadow_min_size]
+
 static func _set_textured(hp: Node, textured: bool) -> void:
-	# Overlays follow the dock's Shadows sub-checkbox, exactly as map-context
-	# props already do (highpoly_mapcontext, _build_mmi).
+	# Overlays follow the same shadow rule as map-context props
+	# (cast_shadows above; highpoly_mapcontext, _build_mmi).
 	#
 	# They used to have no shadow handling at all, so every one defaulted to
 	# casting. That cost nothing while Low-Poly drew no overlays. Once Low-Poly
@@ -658,13 +593,16 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 	# crate lid does not. Measured on the overlay's own bounds, so no per-asset
 	# list has to be kept and a new model classifies itself the moment it loads.
 	#
-	# The distance half is HighpolyLighting.shadow_radius, which Godot enforces by
-	# culling casters outside the shadow range at no cost to us.
+	# The distance half is the shadow range of whichever sun is drawing; Godot
+	# culls casters outside it at no cost to us.
+	var key := dress_key(textured)
+	if str(hp.get_meta("hp_dress", "")) == key:
+		return
 	var shadow: int = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	if HighpolyLighting.cast_shadows:
+	if cast_shadows:
 		var ab := _merged_aabb(hp, "")
 		var longest := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
-		if longest >= HighpolyLighting.shadow_min_size:
+		if longest >= shadow_min_size:
 			shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	var stack: Array = [hp]
 	while not stack.is_empty():
@@ -681,6 +619,7 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 			(n as GeometryInstance3D).layers = TEXTURED_LAYER
 		for c in n.get_children():
 			stack.append(c)
+	hp.set_meta("hp_dress", key)
 
 # A PROXY THAT CANNOT BE SEEN BUT CAN STILL BE CLICKED.
 #
@@ -713,12 +652,15 @@ static func invisible_material() -> StandardMaterial3D:
 	return _invisible_mat
 
 
-static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
+static func _set_proxy_visible(node: Node3D, vis: bool, root_hint: Node = null) -> void:
 	# When HIDING (overlay active), user-placed nodes nested under this proxy
 	# are never touched — hiding a building's proxy must not vanish the props a
 	# builder parented under it. When SHOWING (back to Low-Poly), restore
 	# EVERYTHING — that also heals any geometry a pre-fix version wrongly hid.
-	var scene_root: Node = EditorInterface.get_edited_scene_root() if not vis else null
+	var scene_root: Node = null
+	if not vis:
+		scene_root = root_hint if root_hint != null \
+			else EditorInterface.get_edited_scene_root()
 	var stack: Array = []
 	for c in node.get_children():
 		if c.name != HP_NODE and c.name != COL_NODE:
@@ -759,7 +701,7 @@ static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 # legacy/staging layout (res://highpoly/<Proxy>/). Discovery is a cheap
 # directory glob cached per proxy; nothing reads variant metadata per node.
 
-const VARIANT_META := "hp_variant"   # proxy-node meta: active variant ("" = base)
+const VARIANT_META := "hp_variant"   # key in HighpolyInstanceState (never node meta): active variant ("" = base)
 
 static var _var_disc: Dictionary = {}     # proxy -> {variant: glb_path} (merged, cached)
 static var _var_scenes: Dictionary = {}   # glb_path -> PackedScene (null = parse failed)

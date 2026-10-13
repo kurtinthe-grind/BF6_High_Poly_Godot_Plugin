@@ -14,7 +14,7 @@ class MenuCapabilities(unittest.TestCase):
         check_adapter_sources(self.capabilities, PRODUCT / "addons/highpoly_toggle/highpoly_toggle.gd")
 
     def test_aspirational_unreal_control_is_rejected(self):
-        for key in ("isolate_selected", "backdrops", "fx", "shadows", "lighting"):
+        for key in ("isolate_selected", "backdrops", "shape_outlines", "ground_photo", "configure_shaders"):
             with self.subTest(key=key):
                 menu = copy.deepcopy(self.menu)
                 menu["controls"][key]["engines"].append("unreal")

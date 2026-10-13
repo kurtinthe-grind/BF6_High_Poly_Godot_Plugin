@@ -29,9 +29,8 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 
 **Process**
 - L1. Never force-close the user's editor. No taskkill by image name, ever.
-  Deploy only when the user says the editor is closed; otherwise stage to
-  `user://highpoly/staged` and let them press "Check for updates"
-  (`highpoly_reload.gd:74-131` is the mechanism).
+  Deploy only when the user says the editor is closed. (The staging lane and
+  "Check for updates" were removed in the fork, F-03.)
 - L2. Never write under `GodotProject/` outside this repo while the editor is
   open — hot-reload of duplicate classes crashes it ("Bad address index").
 - L3. Every change goes through the gate (`gate_sandbox.py`) before deploy or
@@ -119,17 +118,16 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 | Stall-detector context | `HighpolyVitals.crumb(what)` (+`IDLE` prefix when done) | — |
 | Long-loop "still going" | `HighpolyVitals.tick_long(what, done, total)` | — |
 | Worker count | `HighpolyVitals.work_tasks(items)` | hardcoded thread counts |
-| Benching | flight harness (`BF6_PERFRUN` + tools/perfrun.py) | eyeballing fps |
+| Benching | flight harness (`BF6_PERFRUN` + tools/perfrun.py) — **removed in the fork (F-05a)** | eyeballing fps |
 | Texture from the install | `gs._texture_for(guid, is_normal, cap)` | a second loader |
 | Depot access | `gs._depot_for(scope)` | walking `_depot_bundles` |
 | Prop geometry | `gs.mesh_for(group_key, lod)` | parsing MeshSets directly |
 | Materials | `gs.material_for` / `gs._material_any` | building StandardMaterial3D ad hoc |
 | GLB at runtime | `HighpolyStore.load_external_glb` | GLTFDocument inline |
-| One Light3D | `HighpolyLighting.make_light(L)` | per-site construction |
 | mkdir | `HighpolyStore.ensure_dir` | raw DirAccess |
 | Overlay membership test | `HighpolyLib.in_overlay(node)` + `HP_NODE`/`COL_NODE`/`NODE` consts | a fifth spelling of the skip set |
 | Ray vs AABB | `HighpolyLib._ray_aabb` | another slab test |
-| Orphan-proof layer clear | the name-`contains` sweep, canonical in `HighpolyFx.clear` (fx:104) | `get_node_or_null` (misses orphaned twins) |
+| Orphan-proof layer clear | the name-`contains` sweep (was canonical in `HighpolyFx.clear`, removed in the fork, F-08) | `get_node_or_null` (misses orphaned twins) |
 | Epoch reads | `HighpolyGameSource.geom_epoch()` | the const (folds) |
 | Machine-readable event | `HighpolyLog.event(ev, d, lvl, cid)` → events.jsonl | a second log file |
 | "Where am I" snapshot | `HighpolyLog.write_state(d)` from the dock heartbeat | polling from outside |
@@ -167,20 +165,22 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 - highpoly_log (398) session log · highpoly_journal (153) build journal (BJournal)
 - highpoly_jobs (191) THE progress model · highpoly_profiler (1,054) session recorder + crash crumbs
 - highpoly_profile (360) per-frame µs · highpoly_vitals (565) machine truth, stalls, work_tasks
-- highpoly_reload (454) staged deploy / hot reload / cold swap · highpoly_updater (478) GitHub self-update
+- highpoly_reload (454) staged deploy / hot reload / cold swap · highpoly_updater (478) GitHub self-update — both **removed in the fork (F-03)**
 - highpoly_store (589) GLB loader + thumbs (+dead index) · highpoly_lib (982) overlay apply + shared vocabulary (HP_NODE…)
 - highpoly_diagnose (826) pick/inspect engine · highpoly_census (834) scene pricing
-- highpoly_flightrun (1,548) THE bench · highpoly_autorun (1,327) legacy bench (~60% duplicate)
-- highpoly_flightpath (112) camera recorder · highpoly_gamedir (158) install discovery
+- highpoly_flightrun (1,548) THE bench · highpoly_autorun (1,327) legacy bench (~60% duplicate) — both **removed in the fork (F-05a)**
+- highpoly_flightpath (112) camera recorder (**removed in the fork, F-05a**) · highpoly_gamedir (158) install discovery
+- bf6_plugin_menu (285) shared "BF6" menu bar + radial — **removed in the fork (UI-01)**; the panel is a permanent dock tab (UI-02)
+- highpoly_preparation_screen (295) launch-time cover screen — **removed in the fork (C-01)**; highpoly_pack (new) per-map geometry/texture packs
 
 ### Features → atlas/features.md
 - decalproject (641) road-decal projector (receiver shapes + stats contract)
-- lighting (1,390) sun/sky/env/zones/fixtures · fx (877) live emitters · water (306)
+- lighting (1,390) sun/sky/env/zones/fixtures · fx (877) live emitters (both **removed in the fork, F-08**) · water (306, **removed in the fork, F-07**)
 - markers (417) fault markers (report = the point) · gamemode (495) + gmmine (513)
 - scatter (808) ground scatter · bctex (498) texture sidecars + pool
 - hlod (617) OFF · rsprops (216) OFF · occluders (128) OFF · placedcull (324) on-hidden
 - collision (249) · previews (602) · doors (107) + variants (183) (merge pair)
-- soldier (181) / vehicle (202) / weapon (117) (merge trio; soldier carries the un-fixed _dress bug)
+- soldier (181) / vehicle (202) / weapon (117) (merge trio; soldier carries the un-fixed _dress bug) — all **removed in the fork (F-05b)**
 - modes (76) · sdkhide (83) · shapeviz (122) · theme (258) + section (204) + tips (145) + splash (124)
 - objdebug (~470, added 2026-08-13) — the Object Debug window: isolates the picked prop (hides ctx children, zero-scales the instance), rebuilds it alone with every UV channel (`gs.debug_sections` + meshset `keep_all_uvs`), live knobs per part, exports the changed-knob recipe. No class_name (staged-lane rule); preloaded by toggle.
 
@@ -263,7 +263,17 @@ Single-layer path with no teardown: `ensure_layer()` (6013).
 - Session log: `user://highpoly-session.log` — locked `.tmp` while the editor
   runs; flushes on clean exit. Crash trail: `user://highpoly/breadcrumbs.txt`.
 - Build journal: `user://highpoly/build_journal.txt`.
-- Geometry cache: `user://bf6_geom/<level>_<sig>_g<EPOCH><lod><vram>/`.
+- Geometry pack: `user://bf6_geom/<level>_<sig>_g<EPOCH><lod><vram>/seg_*.hpk`
+  (highpoly_pack.gd segments; was one .res per mesh, unused under the precache
+  and wiped at launch until `feature/ui-dock-caching`, OPT-01).
+- Texture pack: `user://bf6_tex/<level>_<key16>/seg_*.hpk` (OPT-02; key = TOC
+  signature, textures family recipe, TEXPACK_VERSION, texture cap, VRAM mode).
+- Native heightfield: `user://mapcontext/<map>/height_game.r16` + `height_native.json`
+  (read back on a key match, OPT-05).
+- Cache keys: per family (`highpoly_install_cache.gd` FAMILIES: texture_order,
+  env, heightfield, splat, textures), not the whole add-on (OPT-03/04).
+- On-demand caching: `highpoly_preparation.gd` caches the open map only, from
+  the panel's "Cache this map" (record `user://highpoly/preparation.json`).
 - Map caches: `user://mapcontext/<map>/`.
 
 ### The machine-readable set (readable WHILE the editor runs)

@@ -1,6 +1,7 @@
 @tool
 extends RefCounted
 class_name HighpolyGameSource
+const Pack = preload("highpoly_pack.gd")
 
 # The map, read from the player's own Battlefield 6 install.
 #
@@ -295,6 +296,7 @@ const FROM_INSTALL := "install"
 const FROM_CACHE := "cache"
 const FROM_MEMORY := "memory"
 const FROM_MIXED := "mixed"
+const FROM_WRITE := "cache write"   # writing a cache, never a hit (OPT-14)
 
 var phases := {}                       # name -> {ms, items, unit, from, note}
 var _phase_order: Array = []
@@ -576,7 +578,7 @@ func build_report() -> PackedStringArray:
 		["  of which re-derived one at a time", t_rederive, n_rederived, "meshes", FROM_INSTALL],
 		["  of which served from kept records", 0, n_pc_kept_hits, "meshes", FROM_MEMORY],
 		["mesh: load from geom cache", t_geom_load, n_geom_loaded, "meshes", FROM_CACHE],
-		["mesh: save to geom cache", t_geom_save, n_geom_saved, "meshes", FROM_INSTALL],
+		["mesh: save to geom cache", t_geom_save, n_geom_saved, "meshes", FROM_WRITE],
 		["materials: dress surfaces", t_mat, n_mat_built + n_mat_cached,
 			"lookups", FROM_MIXED],
 		["materials: of which textures", t_tex, int(tex_stats.get("decoded", 0)),
@@ -597,7 +599,11 @@ func build_report() -> PackedStringArray:
 		# either because the readahead had everything ready or because it was
 		# never consulted, and those want opposite fixes.
 		["    of which the readahead had ready", 0, n_precache_textures,
-			"decoded", FROM_CACHE],
+			"decoded", FROM_MEMORY],
+		["tex: served from the texture pack", t_texpack_load, n_texpack_hits,
+			"textures", FROM_CACHE],
+		["tex: saved to the texture pack", 0, n_texpack_saved,
+			"textures", FROM_WRITE],
 		["  tex: compress + mipmaps", t_tex_post, int(tex_stats.get("decoded", 0)),
 			"decoded", FROM_MIXED],
 		["  tex: upload to the GPU", t_tex_up, int(tex_stats.get("decoded", 0)),
@@ -624,9 +630,15 @@ func build_report() -> PackedStringArray:
 			+ "%d placeholder sheet(s) refused, %d panel(s) without one"
 			% [int(tex_stats.get("carpaint_wrap_placeholder", 0)),
 			   int(tex_stats.get("carpaint_wrap_skipped", 0))])
-	out.append("  cache hits: %d of %d mesh asks served from disk (%.0f%%), "
+	out.append("  cache hits: %d of %d mesh asks served from the geometry pack (%.0f%%), "
 		% [n_geom_hit, maxi(1, asks), 100.0 * n_geom_hit / maxf(1.0, float(asks))]
-		+ "%d shared in memory, %d read from the install" % [n_mesh_shared, n_geom_miss])
+		+ "%d shared in memory, %d read from the install (COLD)" % [n_mesh_shared, n_geom_miss])
+	var _tex_asks := n_texpack_hits + int(tex_stats.get("decoded", 0))
+	out.append("  texture pack: %d of %d texture loads served from the pack (%.0f%%, %.2f s), "
+		% [n_texpack_hits, maxi(1, _tex_asks), 100.0 * n_texpack_hits / maxf(1.0, float(_tex_asks)),
+		   t_texpack_load / 1e6]
+		+ "%d decoded from the install (COLD), %d saved for next time"
+		% [int(tex_stats.get("decoded", 0)), n_texpack_saved])
 	out.append("  materials: %d built, %d from the cache (%.0f%% reuse); "
 		% [n_mat_built, n_mat_cached,
 		   100.0 * n_mat_cached / maxf(1.0, float(n_mat_built + n_mat_cached))]
@@ -635,7 +647,8 @@ func build_report() -> PackedStringArray:
 		   int(tex_stats.get("failed", 0))])
 	if n_geom_miss == 0 and asks > 0:
 		out.append("  NOTE: every mesh came from a cache. These per-mesh costs are")
-		out.append("  NOT what a first open pays. Delete user://bf6_geom to measure that.")
+		out.append("  NOT what a first open pays. Delete user://bf6_geom and user://bf6_tex")
+		out.append("  (or this map's folders in them) to measure that.")
 
 	# WHY SOME OF IT DREW WHITE, as a count rather than as a marker at a time.
 	#
@@ -1019,7 +1032,7 @@ func ensure_ground(cache_dir: String, progress := Callable()) -> bool:
 #
 # Those two Dictionaries are mounted once and then read all over this file by
 # scanning every key - terrain() looks for the streaming tree that way,
-# _water_partition and water_sim do the same, _level_dir and the gamemode
+# _level_dir and the gamemode
 # miner's roots_of too. That is fine against a mount that has stopped changing,
 # and it is a crash against one that has not: the sweep runs on a worker, and a
 # Dictionary that rehashes under another thread's iterator takes the process
@@ -1256,11 +1269,27 @@ static func _fail(stage: String, why: String) -> String:
 		stage, why, free_mb, heap_mb]
 
 
+static var _types_shared: Dictionary = {}   # {key, types}: see open_map, OPT-09
+var _types_reused := false
+
+
+static func _types_key(exe: String) -> String:
+	var f := FileAccess.open(exe, FileAccess.READ)
+	if f == null:
+		return ""
+	var size := f.get_length()
+	f.close()
+	return "%s|%d|%d" % [exe.simplify_path().to_lower(), size, FileAccess.get_modified_time(exe)]
+
+
 func open_map(map: String, game_dir := "", progress := Callable(),
 		want := {}) -> bool:
 	error = ""
 	var resolved_install := BF6Container.find_game(game_dir)
-	var install_key: String = preload("highpoly_install_cache.gd").key(resolved_install)
+	# The READER key (install identity + reader scripts), not the whole add-on:
+	# within a session it only has to notice a different install, and keyed on
+	# the full recipe it also dropped everything after any UI edit (OPT-04).
+	var install_key: String = preload("highpoly_install_cache.gd").reader_key(resolved_install)
 	if src != null and (_opened_install_key != install_key or src.game != resolved_install):
 		release_caches()
 		drop_map_data()
@@ -1306,13 +1335,6 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	placements_ready = false
 	var next_level := map.to_lower()
 	if level != next_level:
-		_sky_cache.clear()
-		_active_ve_cache.clear()
-		_environment_cache.clear()
-		_zone_exposure_cache.clear()
-		_lighting_zones_cache.clear()
-		_lighting_zones_stats.clear()
-		_lighting_zones_done = false
 		_scatter_cache.clear()
 		_scatter_done = false
 	level = next_level
@@ -1358,7 +1380,6 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 
 	if progress.is_valid():
 		progress.call(ST_TYPES, 0, 0)
-	types = BF6Types.new()
 	var exe := ""
 	for c in BF6Types.exe_candidates(src.game):
 		if FileAccess.file_exists(c):
@@ -1368,44 +1389,56 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 		error = _fail("finding the type database",
 			"no bf6.exe under %s — the type layouts live in it" % src.game)
 		return false
-	if not types.open(exe):
-		error = _fail("reading the type database", types.error)
-		return false
-	# EA INSTALLS: THE SCHEMA IN THE EXE IS DRM-ENCRYPTED, SO FALL BACK TO A
-	# DATABASE. EA App wraps bf6.exe in Origin DRM and the type schema reads as
-	# ciphertext (entropy ~8.0 against a plain ~3.4), so this executable cannot
-	# describe the map. A database generated once from a readable (or OOA-lifted)
-	# exe carries the same build's schema and serves every install of it. The exe
-	# is preferred WHEN READABLE, so Steam and lifted installs always use their
-	# own - the build can never be stale - and only an encrypted one reaches for
-	# the database.
-	var _from_db := false
-	var ti_bits := float(types.ti_entropy().get("bits", 0.0))
-	if ti_bits > 7.5:
-		var db_path := _find_type_db()
-		var dbt := BF6Types.new()
-		if db_path != "" and dbt.open_db(db_path):
-			# Swap the reader; open_map builds the walk from `types` just below,
-			# so nothing else needs to change - the DB serves layout_full/resolve
-			# in place of the encrypted executable.
-			types = dbt
-			_from_db = true
-			HighpolyLog.info("This install's executable is DRM-encrypted; reading "
-				+ "the map's object types from the generated database %s instead."
-				% db_path.get_file())
-		else:
-			# NO DATABASE: DO NOT FAIL THE WHOLE OPEN. Mounting and Detail Mode
-			# (skinning the user's own placed objects) need no type schema, so an
-			# EA user with no database still gets those - only the map's OWN
-			# objects need the walk, which will come back empty and say why. This
-			# also keeps gen_typedb bootstrappable: it opens the map here, then
-			# supplies its own lifted types, so open must not refuse an encrypted
-			# exe before that.
-			HighpolyLog.warn("This install's executable is DRM-encrypted (%.1f "
-				% ti_bits + "bits) and no type database was found, so the map's "
-				+ "own objects cannot be read. Terrain, textures and your placed "
-				+ "objects still work. Generate a database with ooa_lift then "
-				+ "gen_typedb, or install the shipped bf6_types.bin.")
+	# THE TYPE LAYOUTS ARE KEPT ACROSS OPENS (OPT-09). They were re-read out of
+	# bf6.exe on every open and every map switch (0.75 s each) although they
+	# depend only on the executable. Reused while the same exe (path, size,
+	# modification time) is in place; a game update or another install misses.
+	var _tkey := _types_key(exe)
+	_types_reused = false
+	if _tkey != "" and str(_types_shared.get("key", "")) == _tkey and _types_shared.get("types") != null:
+		types = _types_shared["types"]
+		_types_reused = true
+	else:
+		types = BF6Types.new()
+		if not types.open(exe):
+			error = _fail("reading the type database", types.error)
+			return false
+		# EA INSTALLS: THE SCHEMA IN THE EXE IS DRM-ENCRYPTED, SO FALL BACK TO A
+		# DATABASE. EA App wraps bf6.exe in Origin DRM and the type schema reads as
+		# ciphertext (entropy ~8.0 against a plain ~3.4), so this executable cannot
+		# describe the map. A database generated once from a readable (or OOA-lifted)
+		# exe carries the same build's schema and serves every install of it. The exe
+		# is preferred WHEN READABLE, so Steam and lifted installs always use their
+		# own - the build can never be stale - and only an encrypted one reaches for
+		# the database.
+		var _from_db := false
+		var ti_bits := float(types.ti_entropy().get("bits", 0.0))
+		if ti_bits > 7.5:
+			var db_path := _find_type_db()
+			var dbt := BF6Types.new()
+			if db_path != "" and dbt.open_db(db_path):
+				# Swap the reader; open_map builds the walk from `types` just below,
+				# so nothing else needs to change - the DB serves layout_full/resolve
+				# in place of the encrypted executable.
+				types = dbt
+				_from_db = true
+				HighpolyLog.info("This install's executable is DRM-encrypted; reading "
+					+ "the map's object types from the generated database %s instead."
+					% db_path.get_file())
+			else:
+				# NO DATABASE: DO NOT FAIL THE WHOLE OPEN. Mounting and Detail Mode
+				# (skinning the user's own placed objects) need no type schema, so an
+				# EA user with no database still gets those - only the map's OWN
+				# objects need the walk, which will come back empty and say why. This
+				# also keeps gen_typedb bootstrappable: it opens the map here, then
+				# supplies its own lifted types, so open must not refuse an encrypted
+				# exe before that.
+				HighpolyLog.warn("This install's executable is DRM-encrypted (%.1f "
+					% ti_bits + "bits) and no type database was found, so the map's "
+					+ "own objects cannot be read. Terrain, textures and your placed "
+					+ "objects still work. Generate a database with ooa_lift then "
+					+ "gen_typedb, or install the shipped bf6_types.bin.")
+		_types_shared = {"key": _tkey, "types": types}
 	# WHICH EXE WON, recorded because it is a real choice with consequences and
 	# the log never said. SP and MP carry DIFFERENT type databases, and picking
 	# the wrong one resolves types to the WRONG LAYOUTS rather than failing -
@@ -1420,10 +1453,11 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			_exe_others.append(c)
 
 	walk = BF6Walk.new(src, types)
-	# LIGHTS COME OUT OF THE SAME PASS as the placements. They are placed by
-	# exactly this traversal — a fixture inherits the composed transform of
-	# whichever prefab holds it — and walking a second time to fetch them would
-	# cost another 50 s to learn something the first walk went straight past.
+	# LIGHT ENTITIES ARE STILL COLLECTED, though nothing reads them since the
+	# fork removed Lighting (F-08). The walk cache is keyed on the collector set
+	# (BF6Walk._want_sig), so dropping "light" here would make every map's
+	# cached walk a miss and cost a cold re-walk (~50 s) per map. Drop it
+	# together with LIGHT_TYPES / LIGHT_FIELDS when that one-off cost is fine.
 	for g in LIGHT_TYPES:
 		walk.want_types[str(g)] = "light"
 	# AND THE ENVIRONMENT DECAL VOLUMES, for the same reason: soot under a burn
@@ -1433,11 +1467,10 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	for g in EDV_TYPES:
 		walk.want_types[str(g)] = "edv"
 	walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
-	# Always the install: the type layouts are read out of bf6.exe on every open
-	# and the only caches BF6Types keeps are in-memory ones, so this row never
-	# goes warm and there is no point looking for a cache that is not there.
-	note_phase("typeinfo", Time.get_ticks_msec() - t, 1, "exe", FROM_INSTALL,
-		exe.get_file())
+	# From memory when an earlier open in this session read the same exe.
+	note_phase("typeinfo", Time.get_ticks_msec() - t, 1, "exe",
+		FROM_MEMORY if _types_reused else FROM_INSTALL,
+		exe.get_file() + (" (layouts kept from an earlier open)" if _types_reused else ""))
 	t = Time.get_ticks_msec()
 	# WHETHER THE INDEX WAS BUILT OR READ, decided by whether it reported any
 	# progress at all. bf6_source.partition_index returns a cached dictionary
@@ -1529,13 +1562,14 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			"%d light entities" % walk.ents.size())
 	t = Time.get_ticks_msec()
 	_geom_open()
+	_texpack_open()
 	# The geometry cache directory carries GEOM_EPOCH, so a bump orphans every
 	# mesh on disk and the next open is cold no matter how many times the map has
 	# been built. Recorded here rather than left to be discovered from a build
 	# that is mysteriously slow again.
 	var geom_n := 0
-	if _geom_dir != "":
-		geom_n = DirAccess.get_files_at(_geom_dir).size()
+	if _geom_pack != null:
+		geom_n = int(_geom_pack.count())
 	note_phase("geometry cache open", Time.get_ticks_msec() - t, geom_n,
 		"meshes on disk",
 		FROM_CACHE if geom_n > 0 else FROM_INSTALL,
@@ -1672,12 +1706,6 @@ var _map_data_key := "￿"          # not "" — that is a legitimate key
 # cache key: sections are added as their layers are switched on, so this records
 # progress rather than identity.
 var _md_built := {}
-# The level-light records belong to the open live reader. They used to be
-# serialized to lights.json and immediately parsed back by highpoly_lighting,
-# which made a stale derived file a runtime input. Keep the already-decoded
-# records in memory instead; map_data still reports the count for its UI/timing
-# contract, while level_lights() hands the actual rows to the renderer.
-var _level_light_records: Array = []
 
 
 # EVERYTHING map_data DERIVED, dropped so the next ask is computed by the code
@@ -1700,36 +1728,6 @@ var _level_light_records: Array = []
 func drop_map_data() -> void:
 	_map_data.clear()
 	_map_data_key = "￿"
-	_water_part = "￿"
-	_level_light_records.clear()
-	_lighting_zones_cache.clear()
-	_lighting_zones_stats.clear()
-	_lighting_zones_done = false
-
-
-# Re-ask ONE question and patch the answer in place, leaving the rest of the
-# summary alone.
-#
-# The whole-summary drop above is correct and unusable on a live map: apply()
-# clears the scene before it reloads the data, so anything that goes wrong in the
-# rebuild leaves the level torn down, and the rebuild itself is terrain work on
-# the main thread inside a toggle handler. This costs one partition parse.
-#
-# Erasing on empty matters as much as setting on found. map_data only writes the
-# key when there IS water, so leaving a stale entry behind would be a level
-# showing water it does not have.
-func refresh_water() -> void:
-	_water_part = "￿"
-	_water_look_cache.clear()
-	_water_sim_done = false
-	_water_sim.clear()
-	if _map_data.is_empty():
-		return
-	var w := water(surface_cache)
-	if w.is_empty():
-		_map_data.erase("water")
-	else:
-		_map_data["water"] = w
 
 
 # Has map_data already been built for this cache directory? Asked by the builder
@@ -1746,8 +1744,8 @@ func map_data_ready(cache_dir := "") -> bool:
 # panel on the call. It must give the same answer map_data itself would reach:
 # a missing base build is work, and so is any wanted optional section that has
 # not been built yet - that is the lazy fill, and it is just as capable of
-# freezing the main thread as the first build (mining water alone was measured
-# in the tens of seconds).
+# freezing the main thread as the first build (mining lights or FX alone can
+# take tens of seconds).
 func map_data_would_build(cache_dir := "", want := {}) -> bool:
 	if _map_data_key != cache_dir or _map_data.is_empty():
 		return true
@@ -1755,15 +1753,6 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 	for k in MD_OPTIONAL:
 		if bool(need.get(k, true)) and not _md_built.has(k):
 			return true
-	# WATER RE-ASKS WHEN THE ANSWER WAS "NONE". The key is only written when
-	# water is FOUND, so "built, but no key" is indistinguishable from "asked
-	# before the reader could find it" - and that exact shape is how a water
-	# fix reached a user's editor and did nothing until a restart (twice now:
-	# the aftermath partition miss, then the block-2 river). The cost of the
-	# re-ask on a genuinely waterless map is one partition parse and one
-	# find_block, on the worker, only when the user toggles Water on.
-	if bool(need.get("water", false)) and not _map_data.has("water"):
-		return true
 	return false
 
 
@@ -1776,7 +1765,7 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # is 64 s of a 74 s terrain-only apply, on the main thread, and it is the "why
 # is it extracting things I did not ask for" that people keep reporting.
 #
-# `want` names the OPTIONAL sections: lights, fx, water. Absent or empty means
+# `want` names the OPTIONAL sections: edv. Absent or empty means
 # build everything, so every existing caller behaves exactly as before. The
 # ground, the roads and the group placements are always built: a terrain apply
 # genuinely needs them, and they are what the props and skyline lanes key off.
@@ -1785,7 +1774,11 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # lights wanted, and only the missing section is built - so nothing is lost by
 # not building it up front, which is what makes this safe to skip rather than
 # merely cheaper.
-const MD_OPTIONAL := ["lights", "fx", "water", "edv"]
+#
+# The light and FX sections went with the fork's Lighting and FX switches
+# (F-08); a caller that still names them is ignored, because _md_need reads
+# only the keys listed here.
+const MD_OPTIONAL := ["edv"]
 
 func map_data(cache_dir := "", want := {}) -> Dictionary:
 	var need := _md_need(want)
@@ -1806,7 +1799,7 @@ func map_data(cache_dir := "", want := {}) -> Dictionary:
 
 func _md_need(want: Dictionary) -> Dictionary:
 	if want.is_empty():
-		return {"lights": true, "fx": true, "water": true, "edv": true}
+		return {"edv": true}
 	var d := {}
 	for k in MD_OPTIONAL:
 		d[k] = bool(want.get(k, false))
@@ -1815,35 +1808,9 @@ func _md_need(want: Dictionary) -> Dictionary:
 
 # Build the optional sections named in `need` into `out`. Used both by the first
 # build and by a later ask that turns a layer on.
-func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
-	if cache_dir != "" and bool(need.get("lights", false)) \
-			and not _md_built.has("lights"):
-		var t := Time.get_ticks_msec()
-		# Written as the files the light layer reads, rather than handed over in
-		# memory: the layer is toggled long after the build, from the dock.
-		out["lights"] = lights(cache_dir)
-		_md_built["lights"] = true
-		note_phase("lights", Time.get_ticks_msec() - t, int(out["lights"]),
-			"fixtures", FROM_MEMORY, "from the walk's light entities")
-	if cache_dir != "" and bool(need.get("fx", false)) and not _md_built.has("fx"):
-		var t := Time.get_ticks_msec()
-		out["fx"] = fx(cache_dir)
-		_md_built["fx"] = true
-		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
-			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
-	if bool(need.get("water", false)) \
-			and (not _md_built.has("water") or not out.has("water")):
-		# The second clause is the re-ask: see map_data_would_build. An empty
-		# earlier answer must not outlive the code that produced it.
-		var t_w := Time.get_ticks_msec()
-		var w := water(cache_dir)
-		if not w.is_empty():
-			out["water"] = w
-		_md_built["water"] = true
-		note_phase("water", Time.get_ticks_msec() - t_w, w.size(), "bodies",
-			FROM_INSTALL, "the level's water partition")
+func _md_fill(_cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 	if bool(need.get("edv", false)) and not _md_built.has("edv"):
-		# In memory like water, not a file like lights: the builder runs while
+		# In memory, not a file: the builder runs while
 		# this source is alive either way, and the sheets resolve through
 		# decal_sheet() at build time. The key is written even when the answer
 		# is empty - the records come off the already-run walk, so a re-ask
@@ -1854,9 +1821,6 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 		_md_built["edv"] = true
 		note_phase("decal volumes", Time.get_ticks_msec() - t_e, recs.size(),
 			"volumes", FROM_MEMORY, "from the walk's collected entities")
-	if phases.has("lights") and phases.has("fx points"):
-		timings["lights + fx"] = int(phases["lights"]["ms"]) \
-			+ int(phases["fx points"]["ms"])
 
 
 # WHICH SWITCHABLE LAYER A PLACEMENT BELONGS TO, from the subworld it came out
@@ -2050,10 +2014,13 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 		# game patch recomposites and anything else is a file read. This row is
 		# where "every open pays 30 s" used to hide.
 		var _hm_cached := bool(hm.get("from_cache", false))
+		var _hm_mem := bool(hm.get("from_memory", false))
 		note_phase("ground: heightfield", Time.get_ticks_msec() - t,
 			int(hm.get("res", 0)), "samples per side",
-			FROM_CACHE if _hm_cached else FROM_INSTALL,
+			FROM_CACHE if _hm_cached else (FROM_MEMORY if _hm_mem else FROM_INSTALL),
 			"read back from height_game.r16" if _hm_cached
+				else "already read by the open" if _hm_mem
+				else "decoded by the core and written for next time" if bool(hm.get("native", false))
 				else "composited from the streaming tree and written for next "
 					+ "time; paint %.1fs over %s texels into a %s grid (%.1fx "
 					% [float(_hm_paint_us) / 1e6, _grouped_i(_hm_texels),
@@ -2167,6 +2134,62 @@ static func _terrain_key(res: PackedByteArray) -> String:
 	return "%d:%d:%d+h3" % [n, hash(head), hash(tail)]
 
 
+# ---------------------------------------------------------------------------
+# THE NATIVE HEIGHTFIELD, READ BACK (OPT-05).
+#
+# The native path decoded the heightfield in the core and wrote
+# height_game.r16 on EVERY open - 537 MB on Isolated, ~4 s - and never read it
+# back; only the script path had a key check. The file now carries a meta
+# (height_native.json) with the heightfield family key and its exact byte
+# length, and a matching, whole file is read instead of decoded and rewritten.
+# A different key, a short file or unreadable meta is a miss, never an error.
+const NATIVE_HF_FILE := "height_game.r16"
+const NATIVE_HF_META := "height_native.json"
+
+static func read_native_heightfield(cache_dir: String, key: String) -> Dictionary:
+	if key.is_empty():
+		return {}
+	var meta_path := cache_dir.path_join(NATIVE_HF_META)
+	var r16_path := cache_dir.path_join(NATIVE_HF_FILE)
+	if not FileAccess.file_exists(meta_path) or not FileAccess.file_exists(r16_path):
+		return {}
+	var mv: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
+	if not (mv is Dictionary) or str((mv as Dictionary).get("key", "")) != key:
+		return {}
+	var md := mv as Dictionary
+	var want := int(md.get("bytes", -1))
+	var f := FileAccess.open(r16_path, FileAccess.READ)
+	if f == null or want <= 0 or int(f.get_length()) != want or int(md.get("res", 0)) <= 0:
+		return {}
+	var bytes := f.get_buffer(want)
+	f.close()
+	if bytes.size() != want:
+		return {}
+	return {"bytes": bytes, "meta": md}
+
+static func write_native_heightfield(cache_dir: String, key: String, heights: PackedByteArray,
+		meta: Dictionary) -> bool:
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	var r16_path := cache_dir.path_join(NATIVE_HF_FILE)
+	var staged := "%s.%d.part" % [r16_path, OS.get_process_id()]
+	var file := FileAccess.open(staged, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_buffer(heights)
+	file.close()
+	DirAccess.remove_absolute(cache_dir.path_join(NATIVE_HF_META))   # never pair new bytes with old meta
+	if DirAccess.rename_absolute(staged, r16_path) != OK:
+		DirAccess.remove_absolute(staged)
+		return false
+	if key.is_empty():
+		return true                    # written for the scene builder, just not reusable
+	var md := meta.duplicate()
+	md["key"] = key
+	md["bytes"] = heights.size()
+	md["v"] = 1
+	return preload("highpoly_install_cache.gd").write_record(cache_dir.path_join(NATIVE_HF_META), md)
+
+
 func terrain(cache_dir: String) -> Dictionary:
 	if src == null:
 		return {}
@@ -2177,6 +2200,27 @@ func terrain(cache_dir: String) -> Dictionary:
 			# map_data's main-thread re-ask must not decode/write/scan it again.
 			if not _hm.is_empty() and (_hm.get("data", PackedByteArray()) as PackedByteArray).is_empty():
 				_hm["data"] = FileAccess.get_file_as_bytes(cache_dir.path_join("height_game.r16"))
+			var again := _native_terrain_meta.duplicate()
+			again["from_cache"] = false
+			again["from_memory"] = true
+			return again
+		var hf_key: String = preload("highpoly_install_cache.gd").family_key(src.game, "heightfield")
+		var _t_hf := Time.get_ticks_msec()
+		var back := read_native_heightfield(cache_dir, hf_key)
+		if not back.is_empty():
+			var md: Dictionary = back["meta"]
+			var side_c := int(md.get("res", 0))
+			_hm = {"data": back["bytes"], "res": side_c, "min": float(md.get("world_min", 0.0)),
+				"max": float(md.get("world_max", 0.0)), "min_z": float(md.get("world_min_z", 0.0)),
+				"max_z": float(md.get("world_max_z", 0.0)), "base": 0.0, "scale": float(md.get("scale", 0.0))}
+			_build_tile_steps()
+			_native_terrain_meta = {"file": NATIVE_HF_FILE, "res": side_c, "world_min": float(md.get("world_min", 0.0)),
+				"world_max": float(md.get("world_max", 0.0)), "world_min_z": float(md.get("world_min_z", 0.0)),
+				"world_max_z": float(md.get("world_max_z", 0.0)), "base": 0.0, "scale": float(md.get("scale", 0.0)),
+				"native": true, "from_cache": true}
+			_native_terrain_directory = cache_dir
+			_say("native terrain: heightfield %dx%d read back from the cache in %d ms (no decode, no rewrite)"
+				% [side_c, side_c, Time.get_ticks_msec() - _t_hf])
 			return _native_terrain_meta
 		var grid: Dictionary = env.read_terrain()
 		if bool(grid.get("present", false)):
@@ -2185,22 +2229,23 @@ func terrain(cache_dir: String) -> Dictionary:
 			var scale := float(grid.height_scale) * (65535.0 / 65536.0)
 			if scale <= 0.0: scale = maxf(0.001, float(grid.world_max[1]) - float(grid.world_min[1]))
 			var side := int(grid.width)
-			var path := cache_dir.path_join("height_game.r16")
-			DirAccess.make_dir_recursive_absolute(cache_dir)
-			var file := FileAccess.open(path, FileAccess.WRITE)
-			if file == null:
+			var hf_meta := {"res": side, "world_min": float(grid.world_min[0]),
+				"world_max": float(grid.world_max[0]), "world_min_z": float(grid.world_min[2]),
+				"world_max_z": float(grid.world_max[2]), "scale": scale}
+			if not write_native_heightfield(cache_dir, hf_key, grid.heights, hf_meta):
 				_say("native terrain: cannot write heightfield for the scene builder")
 				return {}
-			file.store_buffer(grid.heights)
-			file.close()
 			_hm = {"data": grid.heights, "res": side, "min": float(grid.world_min[0]),
 				"max": float(grid.world_max[0]), "min_z": float(grid.world_min[2]),
 				"max_z": float(grid.world_max[2]), "base": 0.0, "scale": scale}
 			_build_tile_steps()
-			_native_terrain_meta = {"file": "height_game.r16", "res": side, "world_min": float(grid.world_min[0]),
+			_native_terrain_meta = {"file": NATIVE_HF_FILE, "res": side, "world_min": float(grid.world_min[0]),
 				"world_max": float(grid.world_max[0]), "world_min_z": float(grid.world_min[2]),
-				"world_max_z": float(grid.world_max[2]), "base": 0.0, "scale": scale, "native": true}
+				"world_max_z": float(grid.world_max[2]), "base": 0.0, "scale": scale, "native": true,
+				"from_cache": false}
 			_native_terrain_directory = cache_dir
+			_say("native terrain: heightfield %dx%d decoded and written in %d ms (cache miss%s)"
+				% [side, side, Time.get_ticks_msec() - _t_hf, "" if not hf_key.is_empty() else ", no key"])
 			return _native_terrain_meta
 	var pick := ""
 	# Snapshot: walking the live member races the catalogue republish.
@@ -2512,7 +2557,10 @@ func terrain_surface(cache_dir: String, force := false,
 		# does, which is what makes a stale answer impossible rather than
 		# unlikely.
 		env.cache_dir = cache_dir
-		env.cache_key = preload("highpoly_install_cache.gd").key(src.game)
+		# The ENV family key (OPT-04): the install plus bf6_environment.gd, the
+		# core and the reader - not the whole add-on, so a UI change no longer
+		# rewrites ~400 MB of ground packets per map.
+		env.cache_key = preload("highpoly_install_cache.gd").family_key(src.game, "env")
 		if env.prepare_ground(progress):
 			return {"native": true, "slices": env.ground.materials.size()}
 	# EVERY STAGE BELOW NOW REPORTS WHILE IT RUNS, not only when it ends.
@@ -2533,7 +2581,8 @@ func terrain_surface(cache_dir: String, force := false,
 			_panel.call(stage, done, total)
 	var dir_splat := "%s/splat" % cache_dir
 	var meta_path := "%s/layers.json" % dir_splat
-	var cache_key: String = preload("highpoly_install_cache.gd").key(src.game)
+	# The SPLAT family key (OPT-04); SPLAT_VERSION still gates the format.
+	var cache_key: String = preload("highpoly_install_cache.gd").family_key(src.game, "splat")
 	if not force and not cache_key.is_empty() and FileAccess.file_exists(meta_path) \
 			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
 		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
@@ -3013,8 +3062,8 @@ func _window_state(cache_dir: String):
 		return null
 	var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
 	if not (meta is Dictionary) \
-			or preload("highpoly_install_cache.gd").key(src.game).is_empty() \
-			or str((meta as Dictionary).get("source_recipe", "")) != preload("highpoly_install_cache.gd").key(src.game) \
+			or preload("highpoly_install_cache.gd").family_key(src.game, "splat").is_empty() \
+			or str((meta as Dictionary).get("source_recipe", "")) != preload("highpoly_install_cache.gd").family_key(src.game, "splat") \
 			or int((meta as Dictionary).get("splat_v", 0)) != SPLAT_VERSION:
 		return null                    # window density must match the bake's lut
 	var pick := ""
@@ -4110,807 +4159,6 @@ func _height_at(x: float, z: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# THE WATER SURFACE, from the level's default world part.
-#
-# A WaterSurfaceEntityData instance whose SpatialEntityData.Transform is a unit
-# quad scaled to the surface: right row at +0x20 carries scaleX, forward at
-# +0x40 scaleZ, translation at +0x50 is (tx, ty, tz) with ty the water height.
-# TERRAIN.md §11, verified across all 11 water surfaces in the game.
-#
-# READ FROM RAW OFFSETS, deliberately. The type has no fields in
-# SharedTypeDescriptors, so the deserializer returns nothing for it — this is
-# one of the few places where reaching into the instance bytes is correct
-# rather than lazy.
-#
-# TWO TRAPS, both of which produce plausible water in the wrong place:
-#   * TileOffset at +0x90 is (2048, 0.5, 2048) and looks like extents+height.
-#     Taking its Y puts the sea at y = 0.5 instead of Dumbo's 49.8.
-#   * both documented readings give a HALF extent, and PlaneMesh.size is a FULL
-#     width — so the scale value goes in as-is. Halving it draws the water at
-#     half its width and a quarter of its area, which is invisible from the
-#     middle of a map.
-const WATER_TYPE := "ae0b69fc-2207-d874-8230-fcd467a592cf"
-
-
-# WHICH PARTITION DECLARES THE WATER, found rather than assumed.
-#
-# This used to read one file: <level>/default. That is where mp_dumbo keeps its
-# water surface, and it is not where every level keeps it. mp_aftermath declares
-# it in <level>/_layers_content/water, so the read returned nothing, and nothing
-# is indistinguishable from "this level has no water" - the level came up dry
-# with no error anywhere.
-#
-# Measured: scanning all 3,521 of aftermath's partitions finds the water type in
-# exactly one, and the same scan over dumbo's 1,891 finds it in exactly one. So
-# the entity is always somewhere; only its partition varies.
-#
-# Named candidates first because they cost three parses and cover what we have
-# seen, then a full scan because a candidate list is a guess and a scan is an
-# answer. Partitions whose name mentions water are tried first within the scan,
-# which is a hint about ORDER only: the scan still reaches everything.
-var _water_part := "￿"          # "" is a legitimate answer (no water)
-
-func _water_partition() -> String:
-	if _water_part != "￿":
-		return _water_part
-	_water_part = ""
-	var lvl := _level_dir()
-	for cand in ["%s/default" % lvl, "%s/_layers_content/water" % lvl,
-			"%s/default" % level]:
-		if src.ebx.has(cand) and _counts_water(str(cand)):
-			_water_part = str(cand)
-			return _water_part
-	var rest: Array = []
-	# Snapshot: walking the live member races the catalogue republish.
-	var t_ebx: Dictionary = src.snap_ebx()
-	for k in t_ebx.keys():
-		var n := str(k)
-		if lvl != "" and not n.begins_with(lvl):
-			continue
-		if n.to_lower().contains("water"):
-			if _counts_water(n):
-				_water_part = n
-				return n
-		else:
-			rest.append(n)
-	for n in rest:
-		if _counts_water(str(n)):
-			_water_part = str(n)
-			return _water_part
-	return ""
-
-
-func _counts_water(name: String) -> bool:
-	var raw: PackedByteArray = src.get_ebx(name)
-	if raw.is_empty():
-		return false
-	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
-	if not e.parse(raw):
-		return false
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i) == WATER_TYPE:
-			return true
-	return false
-
-
-# ---------------------------------------------------------------------------
-# THE RIVER, out of terrain streaming-tree BLOCK 2.
-#
-# Block 2 is a second, ABSOLUTE-Y u16 heightfield: the water surface, decoded
-# with block 0's own codec (u16/65536 x WorldSizeY). It was mislabeled
-# "density" from an engine binder slot name, which is why no water search ever
-# looked at it - while the user could SEE the river in game. Measured
-# (MAP-TUNGSTEN.md §U): every decoded sample lands inside its node's stored
-# AABB-Y band, the water-above-ground raster reproduces the braided channels
-# one-for-one, the level descends monotonically downstream (76.4 -> 66.9 m),
-# and on Eastwood the wet plateaus match the LakeData authored levels to the
-# centimetre. Dry texels hold a constant fill just below the terrain floor, so
-# the wet mask is simply "above the fill".
-#
-# Ships on tungsten, eastwood and isolated; every other map has no block 2 and
-# returns {} here, which costs one find_block call.
-#
-# -> {"mesh": ArrayMesh, "y0", "y1", "wet_km2"} or {}
-# ---------------------------------------------------------------------------
-const WATER_GRID := 1024               # ~4 m per sample on a 4 km map: the
-                                       # water surface is smooth, unlike ground
-
-func terrain_water(cache_dir := "") -> Dictionary:
-	if src == null:
-		return {}
-	var pick := ""
-	# Snapshot: walking the live member races the catalogue republish.
-	var t_res: Dictionary = src.snap_res()
-	for rn in t_res.keys():
-		var n := str(rn)
-		if n.contains("streamingtree") and n.to_lower().contains(level):
-			pick = n
-			break
-	if pick == "":
-		return {}
-	var res := src.get_res(pick)
-	if res.is_empty():
-		return {}
-	var t := BF6Terrain.new()
-	var b2 := t.find_block(res, BF6Terrain.BLOCK_DENSITY)
-	if b2.is_empty():
-		return {}                      # no block 2: this map's water is elsewhere
-	if not t.read_block_header(b2) or not t.walk_nodes(b2):
-		return {}
-	var dir := t.read_chunk_directory(res)
-	if dir.is_empty():
-		return {}
-	# The block-2 payload is NOT at the chunk head: the primary chunk is
-	# [block-0][pages][block-2][tiles]. The wrapped fetch hands resolve_external
-	# the block-2 window as if it were the whole chunk, picked from the tail
-	# candidates by which slice's interior u16s scale into the node's own
-	# stored AABB-Y band - pages and tiles do not.
-	var band := {}
-	for n in t.nodes:
-		var nd: Dictionary = n
-		if not nd["external"]:
-			continue
-		var e = dir.get(int(nd["key"]))
-		if e == null:
-			continue
-		var g := str((e as Dictionary)["primary"])
-		var yb := Vector2((nd["min"] as Vector3).y, (nd["max"] as Vector3).y)
-		band[g] = yb
-		band[BF6Terrain._reverse_guid(g)] = yb
-	var xs := t.xs
-	var dsz := t.data_size
-	var wy := t.world_size_y
-	var want := xs * xs * 2
-	var fetch2 := func(g) -> PackedByteArray:
-		var gs := str(g)
-		if not band.has(gs):
-			return PackedByteArray()   # a paired chunk: block 2 has none
-		var raw: PackedByteArray = src.get_chunk(gs)
-		if raw.size() < 2 * dsz:
-			return PackedByteArray()   # single-payload chunk: block 0 only
-		var yb: Vector2 = band[gs]
-		var lo16 := int(maxf(0.0, (yb.x - 0.5) / wy * 65536.0))
-		var hi16 := int(minf(65535.0, (yb.y + 0.5) / wy * 65536.0))
-		var best_off := -1
-		var best := -1.0
-		# Every colour-trailer size any map family ships (BC7 68/132/260, BC1
-		# 132, the granite mixed pair, the mip pair) - mp_isolated's tails are
-		# {8712, 26136} and the original short list dropped ALL of its nodes
-		# (RESEARCH-WATER2.md). The in-band score still decides.
-		for tail in [0, 4624, 8712, 17424, 26136, 34848, 67600, 85024]:
-			var off: int = raw.size() - int(tail) - dsz
-			if off < dsz:
-				continue
-			var okn := 0
-			var cnt := 0
-			var j := 4
-			while j < xs - 4:
-				var i := 4
-				while i < xs - 4:
-					var v := raw.decode_u16(off + (j * xs + i) * 2)
-					if v >= lo16 and v <= hi16:
-						okn += 1
-					cnt += 1
-					i += 13
-				j += 13
-			var f := float(okn) / maxf(1.0, float(cnt))
-			if f > best:
-				best = f
-				best_off = off
-		if best_off < 0 or best < 0.9:
-			return PackedByteArray()
-		return raw.slice(best_off, best_off + want)
-	# EXTERNAL NODES ONLY, exactly as the discovery probes measured. Inline
-	# block-2 payloads bypass the per-node AABB-Y vetting the wrapped fetch
-	# applies, and letting them into the composite painted junk water at
-	# 522 m over the mountains. The externals are the river; a node the game
-	# did not spill to a chunk carries no water worth trusting.
-	for n0 in t.nodes:
-		var nd0: Dictionary = n0
-		if not bool(nd0["external"]):
-			nd0["values"] = PackedByteArray()
-	t.resolve_external(dir, fetch2)
-	var g := t.composite(WATER_GRID)
-	if g.is_empty():
-		return {}
-	# WET = WATER ABOVE GROUND, per texel, never a modal fill. The first cut
-	# clipped against the map's most common block-2 value plus half a metre,
-	# which RESEARCH-WATER2.md measured failing in both directions: eastwood
-	# over-selects 113x (3.4 vs 0.03 km2) because its dry fill sits far below
-	# its many small ponds, and mp_isolated's water VANISHES entirely because
-	# its dry fill IS the water level (a flat 100.5 m fjord). The ground is
-	# right there in height_game.r16 - the block-0 heightfield #72 caches -
-	# and block2 > block0 + 2 cm is the same test the probes validated the
-	# discovery with.
-	var grid: PackedByteArray = g["data"]
-	var gnd := PackedByteArray()
-	var gres := 0
-	var gmin := 0.0
-	var gspan := 1.0
-	var gscale := 1.0
-	if cache_dir != "":
-		var mv: Variant = JSON.parse_string(FileAccess.get_file_as_string(
-			"%s/height_game.json" % cache_dir))
-		if mv is Dictionary:
-			var md: Dictionary = mv
-			gnd = FileAccess.get_file_as_bytes("%s/height_game.r16" % cache_dir)
-			gres = int(md.get("res", 0))
-			gmin = float(md.get("world_min", 0.0))
-			gspan = float(md.get("world_max", 0.0)) - gmin
-			gscale = float(md.get("scale", 1.0))
-			if gres <= 1 or gnd.size() != gres * gres * 2:
-				gnd = PackedByteArray()
-	if gnd.is_empty():
-		# No ground grid to clip against (the heightfield has not been built
-		# for this map yet). Refusing is honest; the water layer asks again
-		# after the terrain exists, and a wrong clip is worse than a late one.
-		_say("game source: block-2 water present but the terrain heightfield "
-			+ "is not built yet - switch Extended Terrain on first")
-		return {}
-	var ground_at := func(wx: float, wz: float) -> float:
-		var fx := clampf((wx - gmin) / gspan, 0.0, 1.0) * float(gres - 1)
-		var fz := clampf((wz - gmin) / gspan, 0.0, 1.0) * float(gres - 1)
-		var x0i := int(fx)
-		var z0i := int(fz)
-		var x1i := mini(x0i + 1, gres - 1)
-		var z1i := mini(z0i + 1, gres - 1)
-		var tx := fx - float(x0i)
-		var tz := fz - float(z0i)
-		var h00 := float(gnd.decode_u16((z0i * gres + x0i) * 2))
-		var h10 := float(gnd.decode_u16((z0i * gres + x1i) * 2))
-		var h01 := float(gnd.decode_u16((z1i * gres + x0i) * 2))
-		var h11 := float(gnd.decode_u16((z1i * gres + x1i) * 2))
-		return lerpf(lerpf(h00, h10, tx), lerpf(h01, h11, tx), tz) \
-			* gscale / 65535.0
-	var lo: Vector3 = g["min"]
-	var hi: Vector3 = g["max"]
-	# The block-2 ROOT's own AABB-Y is the authored envelope of every water
-	# level on the map (tungsten 64.0..76.5, isolated 100.5..109.1, eastwood's
-	# lakes inside 215..238). Values outside it are stray texels in coarse
-	# nodes - one on tungsten claimed a 50 m-deep lake on a mountainside at
-	# 522 m, inside its node's band but outside the root's.
-	var env_lo := lo.y - 0.5
-	var env_hi := hi.y + 0.5
-	var step_x := (hi.x - lo.x) / float(WATER_GRID - 1)
-	var step_z := (hi.z - lo.z) / float(WATER_GRID - 1)
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var quads := 0
-	var y0 := 1.0e9
-	var y1 := -1.0e9
-	for gz in range(WATER_GRID - 1):
-		for gx in range(WATER_GRID - 1):
-			var v00 := grid.decode_u16((gz * WATER_GRID + gx) * 2)
-			var v10 := grid.decode_u16((gz * WATER_GRID + gx + 1) * 2)
-			var v01 := grid.decode_u16(((gz + 1) * WATER_GRID + gx) * 2)
-			var v11 := grid.decode_u16(((gz + 1) * WATER_GRID + gx + 1) * 2)
-			var x0 := lo.x + gx * step_x
-			var z0 := lo.z + gz * step_z
-			# Per corner: wet keeps its water level (and counts toward the
-			# stats); a DRY corner of a wet quad is the bank, and it sits at
-			# its own ground plus the epsilon - never at the raw grid value,
-			# which at composite holes is zero and at coarse texels can be
-			# anything. That is what put 0 m and 522 m into the first mesh's
-			# vertex range while the wet area was already correct.
-			var cy := PackedFloat32Array()
-			var wets := 0
-			for c in [[v00, x0, z0], [v10, x0 + step_x, z0],
-					[v01, x0, z0 + step_z], [v11, x0 + step_x, z0 + step_z]]:
-				var wyv := float((c as Array)[0]) / 65536.0 * wy
-				var gv: float = ground_at.call(float((c as Array)[1]),
-					float((c as Array)[2]))
-				if wyv > gv + 0.02 and wyv >= env_lo and wyv <= env_hi:
-					wets += 1
-					cy.push_back(wyv)
-					y0 = minf(y0, wyv)
-					y1 = maxf(y1, wyv)
-				else:
-					cy.push_back(gv + 0.02)
-			if wets == 0:
-				continue
-			var p00 := Vector3(x0, cy[0], z0)
-			var p10 := Vector3(x0 + step_x, cy[1], z0)
-			var p01 := Vector3(x0, cy[2], z0 + step_z)
-			var p11 := Vector3(x0 + step_x, cy[3], z0 + step_z)
-			st.set_normal(Vector3.UP)
-			st.set_uv(Vector2(x0, z0) * 0.05)
-			st.add_vertex(p00)
-			st.set_uv(Vector2(x0, z0 + step_z) * 0.05)
-			st.add_vertex(p01)
-			st.set_uv(Vector2(x0 + step_x, z0) * 0.05)
-			st.add_vertex(p10)
-			st.set_uv(Vector2(x0 + step_x, z0) * 0.05)
-			st.add_vertex(p10)
-			st.set_uv(Vector2(x0, z0 + step_z) * 0.05)
-			st.add_vertex(p01)
-			st.set_uv(Vector2(x0 + step_x, z0 + step_z) * 0.05)
-			st.add_vertex(p11)
-			quads += 1
-	if quads == 0:
-		return {}
-	var mesh := st.commit()
-	var km2 := quads * step_x * step_z / 1.0e6
-	_say(("game source: river/lake surface from terrain block 2 - %d wet cells "
-		+ "(%.2f km2), water level %.1f..%.1f m") % [quads, km2, y0, y1])
-	return {"mesh": mesh, "y0": y0, "y1": y1, "wet_km2": km2}
-
-
-func water(cache_dir := "") -> Array:
-	var env = native_environment()
-	if env != null:
-		var data: Dictionary = env.read_water()
-		if not data.is_empty():
-			var surfaces: Array = []
-			for row in data.get("surfaces", []):
-				# Visible is authored entity state, not the water renderer's gate.
-				# Aftermath's river authors false and still renders. Consume every
-				# surface returned by the shared reader, as Unreal ReadWater does.
-				var surface: Dictionary = row.duplicate()
-				surface["native"] = true
-				surfaces.append(surface)
-			_say("game source: native water returned %d surface(s) for %s" % [surfaces.size(), level])
-			return surfaces
-	if src == null or types == null:
-		return []
-	var out: Array = []
-	# THE TERRAIN'S OWN WATER FIRST - the block-2 river/lake surface, which is
-	# per-texel truth. The flat entity plane on these maps is authored
-	# UNDERGROUND (tungsten y=0 vs floor 64.8) and acts as the render/material
-	# entity; block 2 is what you actually see in game. cache_dir is where the
-	# block-0 heightfield lives, which the wet clip compares against.
-	var hf := terrain_water(cache_dir if cache_dir != "" else surface_cache)
-	if not hf.is_empty():
-		hf["kind"] = "river"
-	var name := _water_partition()
-	if name == "":
-		if hf.is_empty():
-			return []
-		# a block-2 map whose entity partition eluded the name scan still
-		# renders its river; the look falls back to the default water shader
-		out.append(hf)
-		return out
-	var raw := src.get_ebx(name)
-	if raw.is_empty():
-		if not hf.is_empty():
-			out.append(hf)
-		return out
-	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
-	if not e.parse(raw):
-		return []
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i) != WATER_TYPE:
-			continue
-		var base: int = e.payload + int(e.instance_offsets[i])
-		if base + 0x60 > e.data.size():
-			continue
-		var sx := e.data.decode_float(base + 0x20)
-		var sz := e.data.decode_float(base + 0x48)
-		var tx := e.data.decode_float(base + 0x50)
-		var ty := e.data.decode_float(base + 0x54)
-		var tz := e.data.decode_float(base + 0x58)
-		if absf(sx) < 1.0 or absf(sz) < 1.0:
-			continue
-		var row := {"height": ty, "center": [tx, tz],
-			"size": [absf(sx), absf(sz)]}
-		# THE LOOK, from the same depot chain every other surface uses.
-		# Read from the deserialized instance rather than a raw offset: unlike
-		# the transform, the state key sits past the fields whose offsets shift
-		# between the two water shader variants.
-		var inst = e.read_instance(i)
-		if inst is Dictionary:
-			var look := _water_look(int((inst as Dictionary).get(WATER_STATE_KEY, 0)))
-			if not look.is_empty():
-				row["look"] = look
-		# THE MOTION, from the level's ocean simulation entity. Per LEVEL, not
-		# per surface — a level declares one wind, and copying it onto each
-		# surface is what lets the whole thing survive placements.json without a
-		# second top-level key that a cached load could miss.
-		var sim := water_sim()
-		if not sim.is_empty():
-			row["sim"] = sim
-		out.append(row)
-	if not out.is_empty():
-		var l0: Dictionary = (out[0] as Dictionary).get("look", {})
-		_say("game source: water — %d surface(s), first at y %.1f, %.0f x %.0f m%s"
-			% [out.size(), float(out[0]["height"]),
-			   float((out[0]["size"] as Array)[0]),
-			   float((out[0]["size"] as Array)[1]),
-			   "" if l0.is_empty() else ", %s shader, %d texture(s)"
-					% [str(l0.get("variant", "?")), (l0.get("tex", {}) as Dictionary).size()]])
-	if not hf.is_empty():
-		# The river wears the map's own water look: the buried plane IS the
-		# material entity (full-ocean shader on tungsten/eastwood), block 2 the
-		# shape. Marry them.
-		if not out.is_empty():
-			var first: Dictionary = out[0]
-			if first.has("look"):
-				hf["look"] = first["look"]
-			if first.has("sim"):
-				hf["sim"] = first["sim"]
-		out.append(hf)
-	if out.is_empty():
-		# SAY WHICH KIND OF NOTHING. The fleet measured ten maps with no water
-		# entity at all, and two more (battery, contaminated) whose sea is
-		# ordinary backdrop GEOMETRY placed from the level root - present in
-		# the walk, drawn by the Backdrops layer, invisible to this reader by
-		# design. "Water shows nothing" is correct on all of them, but the two
-		# reasons deserve two sentences, because one of them has a chip the
-		# user can press.
-		var sea := 0
-		if walk != null:
-			for row in walk.rows:
-				var mn := str((row as Dictionary).get("mesh", "")).get_file()
-				if mn.contains("oceanplane") or mn.contains("water"):
-					sea += 1
-		if sea > 0:
-			_say(("game source: no water entity - this map's sea/water is %d "
-				+ "scenery mesh(es); the Backdrops layer draws them") % sea)
-		else:
-			_say("game source: this map ships no water at all - an empty Water "
-				+ "layer is the correct answer, not a failure")
-	return out
-
-
-# ---------------------------------------------------------------------------
-# WHAT THE WATER IS ACTUALLY MADE OF.
-#
-# WaterSurfaceEntityData carries a u64 in field 0x2E15621F, and that u64 IS a
-# ShaderBlockDepot StateKey — so water resolves through exactly the same chain
-# as any mesh section (SHADERS.md 3, 5), no special case in the depot at all.
-#
-# Measured rather than assumed: every 8-byte-aligned u64 in the 0x260-byte
-# instance was tested against ALL 16,936 depots the mp_dumbo mount carries.
-# Of 47 candidates, exactly ONE key matched in exactly ONE depot
-# (42f38eeaac4aa54e in game/glaciermp/levels/mp_dumbo/mp_dumbo) — a single hit
-# out of ~800k lookups, which is not something a coincidence produces.
-#
-# TWO SHADER VARIANTS, and they disagree on almost everything. This is the
-# reason a reader must not generalise from one map:
-#
-#   foam-only  mp_dumbo, mp_aftermath      1 texture,  7 constants
-#              t_waterfoam_rgb + two linear float3 water colours
-#   full ocean mp_tungsten, mp_eastwood,   3-4 textures, 25-27 constants
-#              granite/limestone/outskirts/isolated
-#              t_oceanmicrodetail_nsh (the ripple normal), t_oceanfoam_nsh,
-#              t_oceannoise, perlin2d, and ONE linear float3 water colour
-#
-# mp_dumbo's own depots bind the ocean slots ZERO times (checked across every
-# depot under the level), so the reduced variant is a real authoring choice for
-# the harbour maps and not a resolution miss.
-#
-# The parameter NAMES are not recoverable — cooked depot parameters are
-# machine-generated expression-shader names and no hash construction reproduces
-# them (SHADERS.md 3.5). The slot ids below are therefore stable opaque hashes,
-# identified by what they bind and by which maps change them.
-const WATER_STATE_KEY := 0x2E15621F
-
-const WSLOT_FOAM_RGB := 0x3faa6a0b       # t_waterfoam_rgb   R patches, G bubbles, B crest streaks
-const WSLOT_WATER_A := 0x50b54e74        # linear float3, the brighter of the pair
-const WSLOT_WATER_B := 0xdfcb439c        # linear float3, the darker of the pair
-const WSLOT_FOAM_NSH := 0x60181bbf       # t_oceanfoam_nsh
-const WSLOT_DETAIL_NSH := 0x635b5631     # t_oceanmicrodetail_nsh — the ripple normal
-const WSLOT_NOISE := 0x18caba16          # t_oceannoise
-const WSLOT_PERLIN := 0xf9b82d1e         # perlin2d (128x128 R8, gradient noise)
-const WSLOT_OCEAN_COLOR := 0xeaca953a    # linear float3, the ocean variant's water colour
-
-const WSLOT_ROLE := {
-	WSLOT_FOAM_RGB: "foam_rgb", WSLOT_FOAM_NSH: "foam_nsh",
-	WSLOT_DETAIL_NSH: "detail_nsh", WSLOT_NOISE: "noise", WSLOT_PERLIN: "perlin",
-}
-
-var _water_look_cache := {}
-
-
-# The depot record for one water state key, as {variant, tex, color, scalar}.
-#
-# SCOPED TO THIS LEVEL'S OWN BUNDLES. A StateKey is only unique within a scope,
-# so a global search can bind a colliding key from a parallel level — a
-# confidently wrong material, which is worse than none because nothing about it
-# looks broken (SHADERS.md 4). The water entity's own partition is a sibling of
-# the depot that holds it (aftermath declares water in _layers_content/water and
-# the record lives in _layers_content/content), so walking UP from the partition
-# does not reach it; the level directory is the narrowest prefix that does.
-func _water_look(state_key: int) -> Dictionary:
-	if state_key == 0 or src == null or walk == null:
-		return {}
-	if _water_look_cache.has(state_key):
-		return _water_look_cache[state_key]
-	var out := {}
-	var lvl := _level_dir()
-	for scope in _depot_bundles.keys():
-		var sn := str(scope)
-		if lvl != "" and not sn.begins_with(lvl):
-			continue
-		var pair = _depot_for(sn)
-		if pair == null:
-			continue
-		var dep: BF6Depot = pair[0]
-		if not dep.key_to_record.has(state_key):
-			continue
-		out = _water_params(dep, pair[1] as PackedByteArray, state_key)
-		out["depot"] = sn
-		break
-	_water_look_cache[state_key] = out
-	return out
-
-
-func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
-	var tex := {}          # role -> texture EBX file guid
-	var asset := {}        # role -> texture asset name (for logs and reports)
-	var color := {}        # "%08x" slot -> [r, g, b] LINEAR
-	var scalar := {}       # "%08x" slot -> float
-	var other := {}        # "%08x" slot -> [typeHash, raw hex] for non-Float32 inlines
-	for p in dep.params(int(dep.key_to_record[key]), d):
-		var pd: Dictionary = p
-		var n32: int = int(pd["name32"])
-		var th: int = int(pd["type_hash"])
-		if th == BF6Depot.TH_TEXTURE:
-			var refs: Array = pd["refs"]
-			if refs.is_empty():
-				continue
-			var g := str((refs[0] as Array)[1])
-			var role := str(WSLOT_ROLE.get(n32, "nh_%08x" % n32))
-			tex[role] = g
-			var an = walk.gi.get(g)
-			if an != null:
-				asset[role] = str(an)
-		elif th == 0x25f81af1:
-			var r3: PackedByteArray = pd["raw"]
-			color["%08x" % n32] = [r3.decode_float(0), r3.decode_float(4),
-				r3.decode_float(8)]
-		elif th == 0x14a0b1c1:
-			scalar["%08x" % n32] = (pd["raw"] as PackedByteArray).decode_float(0)
-		else:
-			# NOT EVERY 4-BYTE CONSTANT IS A Float32. The ocean variant ships at
-			# least one under a different type hash, and a reader that only
-			# collects 0x14a0b1c1 silently reports one constant fewer than the
-			# record holds - which is exactly how a count gets quoted wrong.
-			# Kept as raw bytes rather than coerced, since the type is the thing
-			# that is not known.
-			var rb = pd["raw"]
-			if rb != null:
-				other["%08x" % n32] = [th, (rb as PackedByteArray).hex_encode()]
-	# The variant is named by what it BINDS, the same data-driven rule the glass
-	# and carpaint fingerprints use — never by the map or by a texture name.
-	var variant := "foam"
-	if tex.has("detail_nsh") or tex.has("foam_nsh"):
-		variant = "ocean"
-	# Normalised colours, so a consumer does not have to know which variant it
-	# got. Which of the foam variant's two float3s is shallow and which is deep
-	# is NOT settled — see water.gdshader.
-	var shallow: Array = []
-	var deep: Array = []
-	if variant == "ocean":
-		# ONE colour, and "deep" is deliberately left absent rather than set to
-		# the same value: the consumer's fallback darkens it, and writing the
-		# identical colour into both would flatten the depth gradient to nothing
-		# while still looking like mined data.
-		shallow = color.get("%08x" % WSLOT_OCEAN_COLOR, [])
-	else:
-		shallow = color.get("%08x" % WSLOT_WATER_A, [])
-		deep = color.get("%08x" % WSLOT_WATER_B, [])
-	var out := {"variant": variant, "tex": tex, "asset": asset,
-		"color": color, "scalar": scalar, "other": other,
-		"key": BF6Depot.key_hex(key)}
-	if not shallow.is_empty():
-		out["shallow"] = shallow
-	if not deep.is_empty():
-		out["deep"] = deep
-	return out
-
-
-# One of the water textures as a Texture2D, by the file guid _water_look put in
-# the look dict. Goes through the ordinary texture path so it gets the same
-# cache, the same block compression and the same normal-map handling as every
-# other surface; `detail_nsh` and `foam_nsh` carry a normal in RG and are
-# tagged as such, because DXT-compressing a normal map bands every ripple.
-func water_texture(file_guid, is_normal := false):
-	return _texture_for(file_guid, is_normal, 0)
-
-
-# ---------------------------------------------------------------------------
-# WHAT DRIVES THE WAVES: WaterOceanSimulationEntityData.
-#
-# The depot record above says what the water is MADE of. It says nothing about
-# how it MOVES, because the wave field is a runtime GPU simulation and nothing
-# on disk holds the result. What IS on disk is the simulation's inputs, on a
-# WaterOceanSimulationEntityData in one of the level's *_schematic partitions,
-# and those are enough to give the preview the map's own wind direction, its own
-# roughness and its own crest sharpness instead of one fixed sine field.
-#
-# MEASURED ACROSS THE WHOLE GAME (40 instances in 21 partitions, reachable from
-# a single mount because the mount carries every level's bundles):
-#
-#   WindAngle    -0.08 .. 3.00      radians. NOT turns: 1.34 and 3.00 are out of
-#                                   a 0..1 range, and the spread sits inside
-#                                   -pi..pi. Which world axis 0 points down, and
-#                                   the sign, are NOT resolved - see below.
-#   WindSpeed     0.01 .. 0.75      NOT metres per second. Every calm MP water
-#                                   is 0.01, the windy ones 0.07, and the D-Day
-#                                   singleplayer sea 0.30-0.75. Used as a
-#                                   normalised roughness with 0.07 as neutral.
-#   Choppiness    0.005 .. 3.00     crest sharpness. mp_aftermath 0.02 (glassy),
-#                                   mp_tungsten 0.60, sp_invasion 3.00.
-#   FoamThreshold 0 .. 290          units unknown; used as a relative cutoff.
-#   TileDimension 0.01 .. 128       reported, NOT wired: 0.5 on mp_dumbo against
-#                                   128 on a singleplayer sea is not a metre
-#                                   count that a wavelength can be read out of.
-#
-# TWO OR MORE INSTANCES PER LEVEL, one flagged 0x6E8C0B93 and the others clear,
-# and what selects between them at runtime is not known. mp_tungsten's single
-# instance is CLEAR, so "take the flagged one" alone would leave the one true
-# ocean map with no wave data at all. The rule here is: prefer a flagged
-# instance, otherwise take the first - stated rather than hidden, because on
-# mp_isolated (four instances, two flagged, very different values) it is a
-# guess.
-const SIM_TYPE := "3ad51130-494f-ee8a-45cd-01103be713ee"
-const SIM_ENABLE := 0x6E8C0B93           # named from OceanComponentData.PropertyOverrides
-const SIM_WIND_ANGLE := 0x2BD08352
-const SIM_WIND_SPEED := 0x8613EBCA
-const SIM_CHOPPINESS := 0xD488F0CB
-const SIM_WIND_DIST := 0xA1E59641
-const SIM_FOAM_ENABLE := 0xF0340815
-const SIM_FOAM_THRESHOLD := 0xFFA1D0E2
-const SIM_FOAM_MAX := 0xF2C13BDD
-const SIM_TILE_DIM := 0x54A5216B
-const SIM_MIN_WAVELENGTH := 0x787474E1
-const SIM_LARGE_WAVE_RED := 0xC44A1FAF
-const SIM_WAVE_THICKNESS := 0xAA2BBED7
-
-# WindDistribution is a SplineCurve (type name hash 0x3A39B4F4), NOT a spectrum
-# of float4s. Its members are XValues0..2 (12 slots), YValues0..3 (16 slots),
-# GValues0..5 (tangents) and SplineType, which is an ENUM whose values are
-# literally 5, 9 and 13 CONTROL POINTS (exe_enum_values.tsv).
-#
-# The packing, derived and then checked against every instance in the game:
-# n control points use the first n-1 X slots with the LAST X implicit at 1.0
-# (12 X slots = 13-1), and the first n Y slots. mp_tungsten reads
-# X = 0, .092, .182, .362, .489, .662, .784, .900 (+1.0) with n = 9, which is
-# ascending and ends exactly where the implicit point would - that is the check.
-#
-# WHAT THE X AXIS MEANS IS INFERRED, not proved, and the inference is this:
-#   * X 0 and X 1 both carry Y ~ 0 on essentially every authored curve, which is
-#     the continuity condition of a function on a CIRCLE, not of a spectrum.
-#   * the common authored idiom is a single narrow lobe centred at X = 0.5
-#     (dsub_sp_nightraid is exactly 0, 0, 1, 0 over 0, .001, .575, .999) -
-#     a spreading function peaked on the wind direction.
-#   * the two presets of a level are MIRRORS of each other: mp_dumbo's flagged
-#     instance is Y = (0, 1.0, 0, 0.4, 0) and its clear one (0, 0.4, 0, 1.0, 0).
-#     Mirroring is a direction operation. A wavelength spectrum does not mirror.
-# So it is read as ENERGY BY DIRECTION, X mapping the full circle around
-# WindAngle. Read the other way (amplitude by wavelength) the same numbers would
-# still drive four wave components, just with the roles of the two axes swapped.
-#
-# GValues are non-zero on 15 of the 40 instances, so the curve is not always
-# piecewise linear. It does not matter here: only the control points are used,
-# and a control point is where the author put a lobe.
-const SIM_CURVE_TYPE := 0xEC989148
-const SIM_CURVE_X := [0xA3F9DFEE, 0xAB145027, 0x4FBB37BF]
-const SIM_CURVE_Y := [0x57C358C3, 0xE9D446E7, 0xE4DA513E, 0xF324662A]
-const SIM_VEC4 := [0x3901DB14, 0x42FC0F5E, 0x32A99B9C, 0x7C8062F2]   # x,y,z,w BY OFFSET
-
-var _water_sim_done := false
-var _water_sim := {}
-
-
-# The open level's ocean simulation inputs, or {} when it declares none.
-#
-# Small on purpose: every value here rides in placements.json next to the water
-# planes, so a cached load with no game mount still gets the map's own wind and
-# choppiness. Textures need a mount; numbers do not.
-func water_sim() -> Dictionary:
-	if _water_sim_done:
-		return _water_sim
-	_water_sim_done = true
-	_water_sim = {}
-	if src == null or types == null:
-		return _water_sim
-	var lvl := _level_dir()
-	# Same ORDER-not-scope idiom as _water_partition: the shapes we have seen
-	# first (the _layers_content/water_shared ones and mp_granite's water_global
-	# both carry "water" in the name, mp_dumbo keeps it in default_schematic),
-	# then every other schematic under the level. A candidate list is a guess;
-	# the sweep behind it is the answer.
-	var named: Array = []
-	var rest: Array = []
-	# Snapshot: walking the live member races the catalogue republish.
-	var t_ebx: Dictionary = src.snap_ebx()
-	for k in t_ebx.keys():
-		var n := str(k)
-		if lvl != "" and not n.begins_with(lvl):
-			continue
-		if not n.contains("schematic"):
-			continue
-		if n.contains("water"):
-			named.append(n)
-		else:
-			rest.append(n)
-	named.sort()
-	rest.sort()
-	rest.push_front("%s/default_schematic" % lvl)
-	for n in named + rest:
-		var got := _sim_in(str(n))
-		if not got.is_empty():
-			_water_sim = got
-			_say("game source: ocean sim — %s, wind %.2f rad, speed %.3f, chop %.3f, %d wind lobe(s)"
-				% [str(n).get_file(), float(got.get("angle", 0.0)),
-				   float(got.get("speed", 0.0)), float(got.get("chop", 0.0)),
-				   (got.get("dist", []) as Array).size()])
-			break
-	return _water_sim
-
-
-func _sim_in(name: String) -> Dictionary:
-	var raw: PackedByteArray = src.get_ebx(name)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
-	if not e.parse(raw):
-		return {}
-	var first := {}
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i) != SIM_TYPE:
-			continue
-		var d = e.read_instance(i)
-		if not (d is Dictionary):
-			continue
-		var row := _sim_row(d as Dictionary, name, i)
-		if bool((d as Dictionary).get(SIM_ENABLE, false)):
-			return row                     # the flagged one wins outright
-		if first.is_empty():
-			first = row
-	return first
-
-
-func _sim_row(d: Dictionary, part: String, idx: int) -> Dictionary:
-	return {
-		"part": part, "index": idx,
-		"enabled": bool(d.get(SIM_ENABLE, false)),
-		"angle": float(d.get(SIM_WIND_ANGLE, 0.0)),
-		"speed": float(d.get(SIM_WIND_SPEED, 0.0)),
-		"chop": float(d.get(SIM_CHOPPINESS, 0.0)),
-		"foam": bool(d.get(SIM_FOAM_ENABLE, true)),
-		"foam_threshold": float(d.get(SIM_FOAM_THRESHOLD, 0.0)),
-		"foam_max": float(d.get(SIM_FOAM_MAX, 0.0)),
-		"tile": float(d.get(SIM_TILE_DIM, 0.0)),
-		"min_wavelength": float(d.get(SIM_MIN_WAVELENGTH, 0.0)),
-		"large_wave_reduction": float(d.get(SIM_LARGE_WAVE_RED, 0.0)),
-		"wave_thickness": float(d.get(SIM_WAVE_THICKNESS, 1.0)),
-		"dist": _sim_curve(d.get(SIM_WIND_DIST, null)),
-	}
-
-
-# WindDistribution's control points as [[x, y], ...], x ascending over 0..1.
-func _sim_curve(v) -> Array:
-	if not (v is Dictionary):
-		return []
-	var c: Dictionary = v
-	var n := int(c.get(SIM_CURVE_TYPE, 0))
-	if n < 2:
-		return []
-	var xs: Array = _sim_flat(c, SIM_CURVE_X)
-	var ys: Array = _sim_flat(c, SIM_CURVE_Y)
-	var out: Array = []
-	for i in range(n):
-		# the last control point's X is implicit at 1.0: 12 X slots hold 13-1
-		var x := 1.0
-		if i < n - 1 and i < xs.size():
-			x = float(xs[i])
-		var y: float = float(ys[i]) if i < ys.size() else 0.0
-		out.append([snappedf(x, 0.0001), snappedf(y, 0.0001)])
-	return out
-
-
-func _sim_flat(c: Dictionary, members: Array) -> Array:
-	var out: Array = []
-	for m in members:
-		var v = c.get(m, null)
-		for comp in SIM_VEC4:
-			out.append(float((v as Dictionary).get(comp, 0.0)) if v is Dictionary else 0.0)
-	return out
-
-
-# ---------------------------------------------------------------------------
 # THE MAP'S LIGHTS.
 #
 # 7,878 fixtures on Dumbo — 4,470 spot and 3,408 omni, the same set and the same
@@ -5004,105 +4252,6 @@ const F_EDVT_KEY := 0x4A98C1F8       # the template's depot state key (u64)
 
 const EDV_FIELDS: Array = [F_EDV_TEMPLATE, F_EDV_ENABLE, F_EDV_ALPHA,
 	F_EDV_CULL]
-
-
-# The schema highpoly_lighting.set_map_lights already reads, written into the
-# map cache. Deliberately the same FILE as the download path used: the light
-# builder is 150 lines of Godot-side work — culling, distance fade, the spot
-# cone convention — and a second entry point into it is how the two drift until
-# only one is right.
-# One collected entity -> one record of the schema set_map_lights reads, or
-# null when it is not a light or is authored off.
-#
-# Split out of lights() so the placed-object walker can produce the same shape:
-# a lamp dropped into a scene and the same lamp standing on the map are the same
-# fixture read the same way, and two builders would drift.
-func _light_record(ent: Dictionary):
-	if str(ent.get("tag", "")) != "light":
-		return null
-	var tname := str(LIGHT_TYPES.get(str(ent.get("type", "")), ""))
-	if tname == "":
-		return null
-	var f: Dictionary = ent.get("f", {})
-	# An explicitly disabled fixture is off in the game and stays off here.
-	# Absent means enabled: most lights declare none of the six spellings.
-	for h in F_ENABLED:
-		if f.has(h) and f[h] == false:
-			return null
-	if f.get(F_VISIBLE) == false:
-		return null
-	var xf: Array = ent["xf"]
-	var pos: Vector3 = xf[3]
-	var col: Vector3 = f.get(F_COLOR, Vector3.ONE) if f.get(F_COLOR) is Vector3 \
-		else Vector3.ONE
-	var rad = f.get(F_ATTEN_RADIUS)
-	if not (rad is float or rad is int):
-		rad = f.get(F_RADIUS_A, f.get(F_RADIUS_B, 10.0))
-	var spot := tname.contains("Spot")
-	var rec := {
-		"pos": [pos.x, pos.y, pos.z],
-		"spot": spot,
-		"radius": float(rad) if (rad is float or rad is int) else 10.0,
-		"color": [col.x, col.y, col.z],
-		"intensity": float(f.get(F_INTENSITY, 1000.0)),
-		"unit": int(f.get(F_LIGHT_UNIT, 0)),
-		"layer": "base",
-		"type": tname,
-	}
-	if spot:
-		rec["angle"] = float(f.get(F_OUTER_ANGLE, 60.0))
-		# A SPOT SHINES ALONG MINUS ITS FORWARD AXIS. Basis row 2 is FORWARD
-		# (right/up/forward/translation at 0..3), and the sign is the whole
-		# answer: get it backwards and every cone in the map points at the
-		# ceiling it is mounted in.
-		#
-		# MEASURED, not assumed. Read off the fixtures whose real aim is not
-		# in doubt: lf_com_potlight_round_01 is a recessed ceiling downlight
-		# and its component sits 0.11 m BELOW the fixture origin with forward
-		# = (0, +1, 0); lf_com_flushmount_round_01 (-0.13 m) and
-		# lf_ind_ceilingled_square_01 (-0.47 m) are the same, and
-		# lf_com_streetlight_02 and lf_euu_streetlamp_vintage_01 sit 9.9 m and
-		# 7.1 m up their poles with forward = (0, +1, 0). Taking forward as
-		# the beam would have every one of them lighting the ceiling or the
-		# sky, so the beam is -forward.
-		var d: Vector3 = -(xf[2] as Vector3)
-		if d.length() > 1e-4:
-			rec["dir"] = [d.x, d.y, d.z]
-	return rec
-
-
-func _light_records(ents: Array) -> Array:
-	var out: Array = []
-	for e in ents:
-		if not (e is Dictionary):
-			continue
-		var rec = _light_record(e)
-		if rec != null:
-			out.append(rec)
-	return out
-
-
-func lights(_cache_dir: String) -> int:
-	if walk == null or walk.ents.is_empty():
-		_level_light_records.clear()
-		return 0
-	var out: Array = _light_records(walk.ents)
-	var spots := 0
-	for r in out:
-		if bool((r as Dictionary).get("spot", false)):
-			spots += 1
-	_level_light_records = out
-	_say("game source: %d lights (%d spot, %d omni)"
-		% [out.size(), spots, out.size() - spots])
-	return out.size()
-
-
-# Read-only view of the current level's live-decoded fixtures. Returning the
-# Array itself is intentional: callers only iterate it, and duplicating several
-# thousand dictionaries every time the lighting switch is toggled would add a
-# large allocation without adding safety.
-func level_lights() -> Array:
-	return _level_light_records
 
 
 # ---------------------------------------------------------------------------
@@ -5251,595 +4400,8 @@ func decal_sheet(file_guid: String):
 	return _decal_sheet(file_guid, false)
 
 
-# ---------------------------------------------------------------------------
-# THE MAP'S FX SPAWN POINTS.
-#
-# Already in the walk: every fx_* reference is visited and its world transform
-# composed, and the rows that resolve to no mesh are exactly these. So this
-# reads the rows rather than walking again.
-#
-# WHAT IS SHIPPED, AND WHY NOT ALL OF IT. On Dumbo 14,163 rows are fx, and
-# ~94% of them are destruction and impact effects — fx_propdest_glass_tiny on
-# every window, fx_gendest_metal on every railing. Those are EVENT-TRIGGERED:
-# they fire when the prop breaks, and the plugin draws a record as a
-# continuously emitting particle system. Shipping them buries the map under
-# permanent shattering glass and burns the whole emitter budget on effects that
-# are never seen in play. Ambient FX is what reads as the map.
-const FX_TRIGGERED: Array = ["dest", "debris", "breakpoint", "impact", "bullet",
-	"_hit", "explosion", "detach", "burst", "tracer", "muzzle", "casing"]
-
-# Class drives the plugin's fallback look and its draw distance, so it only has
-# to be right about the KIND. Order matters: "smokey_steam" is smoke before it
-# is anything else.
-const FX_CLASSES: Array = [
-	["electric", ["electric", "spark", "arc_", "lightning"]],
-	["fire", ["fire", "flame", "burn", "ember", "torch"]],
-	["smoke", ["smoke", "steam", "fume", "exhaust"]],
-	["dust", ["dust", "sand", "ash", "debris", "trash", "leaf", "leaves",
-		"paper", "pollen", "snow", "mist", "fog", "haze"]],
-]
-
-
-static func _fx_class(n: String) -> String:
-	for c in FX_CLASSES:
-		for tok in (c as Array)[1]:
-			if n.contains(str(tok)):
-				return str((c as Array)[0])
-	return "other"
-
-
-func fx(cache_dir: String, keep_triggered := false) -> int:
-	if walk == null:
-		return 0
-	var out: Array = []
-	var triggered := 0
-	var joined := 0
-	var graph_cache := {}
-	for r in walk.rows:
-		var row: Dictionary = r
-		var path := str(row["mesh"])
-		var leaf := path.get_file().to_lower()
-		if leaf.ends_with(".ebx"):
-			leaf = leaf.substr(0, leaf.length() - 4)
-		if not leaf.begins_with("fx_"):
-			continue
-		var trig := false
-		for tok in FX_TRIGGERED:
-			if leaf.contains(str(tok)):
-				trig = true
-				break
-		if trig:
-			triggered += 1
-			if not keep_triggered:
-				continue
-		var xf = row["xf"]
-		if not (xf is Array) or (xf as Array).size() < 4:
-			continue
-		var o: Vector3 = (xf as Array)[3]
-		var fwd: Vector3 = (xf as Array)[2]
-		var yaw := 0.0
-		if absf(fwd.x) > 1e-6 or absf(fwd.z) > 1e-6:
-			yaw = atan2(fwd.x, fwd.z)
-		# THE EMITTER GRAPH, mined rather than shipped. The plugin's fx_params
-		# table is keyed by eg_* graph, and an fx_ effect COMPOSES one or more of
-		# them — the pipeline kept that mapping in a 23 MB fx_effects.json. It
-		# does not need to: an fx partition's imports name the graphs directly,
-		# and there are a few hundred distinct effects on a map against tens of
-		# thousands of placements, so this is a few hundred header reads.
-		var graph = graph_cache.get(leaf)
-		if graph == null:
-			graph = _fx_graph(path)
-			graph_cache[leaf] = graph
-		if str(graph) != "":
-			joined += 1
-		out.append({
-			"pos": [o.x, o.y, o.z],
-			"yaw": yaw,
-			"class": _fx_class(leaf),
-			"effect": str(graph) if str(graph) != "" else leaf.to_upper(),
-			"source_class": "base",
-			"name": leaf,
-		})
-	if out.is_empty():
-		return 0
-	DirAccess.make_dir_recursive_absolute(cache_dir)
-	var f := FileAccess.open("%s/fx.json" % cache_dir, FileAccess.WRITE)
-	if f == null:
-		_say("game source: fx — cannot write to %s" % cache_dir)
-		return 0
-	f.store_string(JSON.stringify({"fx": out, "_map": level,
-		"_triggered_excluded": 0 if keep_triggered else triggered}))
-	f.close()
-	_say("game source: %d fx points (%d event-triggered excluded), "
-		% [out.size(), 0 if keep_triggered else triggered]
-		+ "%d joined an emitter graph" % joined)
-	return out.size()
-
-
-# The first eg_* partition an fx effect imports, or "".
-func _fx_graph(path: String) -> String:
-	var n := path.to_lower()
-	if n.ends_with(".ebx"):
-		n = n.substr(0, n.length() - 4)
-	var raw := src.get_ebx(n)
-	if raw.is_empty():
-		return ""
-	var e := BF6Ebx.new(types, walk.gi)
-	# The EFIX tables alone carry the imports, and parse() reads exactly those —
-	# no instance is decoded here, which is why a few hundred of these is cheap.
-	if not e.parse(raw):
-		return ""
-	for imp in e.imports:
-		var target = walk.gi.get(str((imp as Dictionary)["partition"]))
-		if target == null:
-			continue
-		var tl := str(target).get_file().to_lower()
-		if tl.ends_with(".ebx"):
-			tl = tl.substr(0, tl.length() - 4)
-		if tl.begins_with("eg_"):
-			return tl.to_upper()
-	return ""
-
-
-# ---------------------------------------------------------------------------
-# THE SKY, from the level's own VisualEnvironment preset.
-#
-# The panorama the game draws behind the level. One .dds of it used to ship
-# inside this addon — Battlefield art, handed to everyone who installed the
-# plugin — which is exactly what it must not do; it is read from the player's
-# install instead, like everything else.
-#
-# The active preset is the non-`thermal` ve_* partition the level root imports.
-# `SkyType` 0 selects the panoramic path, `PanoramicTexture` is the HDR image,
-# and `LuminanceScale` carries its magnitude: panoramas ship NORMALISED, so the
-# texture alone is not the brightness.
-#
-# 360 x 90, NOT 360 x 180 — the trap this whole feature turns on. The 4:1 aspect
-# is angular coverage: the top row is the ZENITH, the bottom row the HORIZON,
-# and there is no below-horizon content at all. Godot's PanoramaSkyMaterial
-# wants a 2:1 equirect, and handing it the texture directly stretches 90 degrees
-# of sky over a full sphere — measured across 22 maps, that puts the painted sun
-# BELOW the horizon on every one. So it is remapped: the panorama occupies the
-# upper half and the horizon row is carried down to fill the lower.
-const F_PANORAMIC_TEXTURE := 0xC4184CD8
-const F_LUMINANCE_SCALE := 0x5EBAF2B1
-const F_SKY_TYPE := 0xFF6D65E7
-const F_PANORAMIC_ROTATION := 0x89F2223A
-
-# VisualEnvironment component type GUID prefixes. These are the same
-# component-qualified selectors used by core/src/velighting.cpp. Field hashes
-# are never searched globally: several names occur on more than one component
-# with different meanings and valid-looking values.
-const VE_SUN := "f8b3f61a"
-const VE_SKY := "5fb52ff8"
-const VE_FOG := "8ab9baf8"
-const VE_EXPOSURE := "5b6bbccc"
-const VE_GRADING := "ef4eec57"
-const VE_WHITE := "eeeab5a6"
-const VE_AO := "2f9e79a0"
-const VE_GI := "c4ea62ae"
-const VE_SHADOW := "1c6df12b"
-const VE_ENTITY := "5d092d08"
-
-const VE_X := 0x3901DB14
-const VE_Y := 0x42FC0F5E
-const VE_Z := 0x32A99B9C
-const VE_QUALITY_0 := 0xD0A94456
-const VE_VISIBILITY := 0x66BCDFFB
-
-var _active_ve_cache := {}
-var _environment_cache := {}
-var _zone_exposure_cache := {}
-var _lighting_zones_cache: Array = []
-var _lighting_zones_stats := {}
-var _lighting_zones_done := false
-
-
-# A real/boolean field, including Frostbite's four-member quality struct. The
-# caller checks field presence before calling, so null means malformed data and
-# is not silently turned into a plausible zero.
-static func _ve_scalar(d: Dictionary, h: int):
-	var v = d.get(h)
-	if v is Dictionary:
-		v = (v as Dictionary).get(VE_QUALITY_0)
-	return v
-
-
-static func _ve_vec(d: Dictionary, h: int) -> Array:
-	var v = d.get(h)
-	if not (v is Dictionary):
-		return []
-	var q: Dictionary = v
-	if not q.has(VE_X) or not q.has(VE_Y) or not q.has(VE_Z):
-		return []
-	return [float(q[VE_X]), float(q[VE_Y]), float(q[VE_Z])]
-
-
-static func _ve_put_scalar(out: Dictionary, key: String, d: Dictionary, h: int) -> void:
-	if not d.has(h):
-		return
-	var v = _ve_scalar(d, h)
-	if v is bool or v is int or v is float:
-		out[key] = v
-
-
-static func _ve_put_vec(out: Dictionary, key: String, d: Dictionary, h: int) -> void:
-	if not d.has(h):
-		return
-	var v := _ve_vec(d, h)
-	if not v.is_empty():
-		out[key] = v
-
-
-# Inspect what a candidate IS rather than deciding from its filename. The
-# OutdoorLight component and VE entity visibility are the two discriminators
-# proven by the native reader. Keeping this method separate also makes the
-# selection control testable without loading textures or building a scene.
-func _inspect_ve(part: String) -> Dictionary:
-	var raw := src.get_ebx(part)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-	var out := {"path": part, "has_sun": false, "visibility": 0.0}
-	for i in range(e.instance_offsets.size()):
-		var tg := e.instance_type(i).to_lower().left(8)
-		if tg == VE_SUN:
-			out["has_sun"] = true
-		elif tg == VE_ENTITY:
-			var d := e.read_instance(i, 0, {VE_VISIBILITY: true})
-			if d.has(VE_VISIBILITY) and d[VE_VISIBILITY] is float:
-				out["visibility"] = float(d[VE_VISIBILITY])
-	return out
-
-
-# Exact exposure fields from ONE named VE preset. Local presets are thin
-# overrides, so requiring the sun/sky components used by environment_lighting()
-# would reject the very files a lighting zone is supposed to activate.
-func _zone_exposure(part: String) -> Dictionary:
-	var key := part.to_lower()
-	if _zone_exposure_cache.has(key):
-		return _zone_exposure_cache[key]
-	var raw := src.get_ebx(key)
-	if raw.is_empty():
-		_zone_exposure_cache[key] = {}
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		_zone_exposure_cache[key] = {}
-		return {}
-	var out := {}
-	for i in range(e.instance_offsets.size()):
-		if e.instance_type(i).to_lower().left(8) != VE_EXPOSURE:
-			continue
-		var d := e.read_instance(i)
-		_ve_put_scalar(out, "ev", d, 0xE1877E34)
-		_ve_put_scalar(out, "ev_max", d, 0xA8AE270A)
-		break
-	_zone_exposure_cache[key] = out
-	return out
-
-
-# Exact local VisualEnvironment trigger geometry from the public native ABI.
-# The envelope's controls are checked before any row is exposed to the renderer:
-# a plausible-looking result with a working rotated-source join is rejected.
-func lighting_zones() -> Array:
-	if src == null or walk == null or types == null:
-		return []
-	if _lighting_zones_done:
-		return _lighting_zones_cache
-	if not _ensure_native_core():
-		return []
-	var envelope = JSON.parse_string(str(_native_core.lighting_zones(level)))
-	if not (envelope is Dictionary) or not bool(envelope.get("ok", false)):
-		_say("game source: lighting zones - native read failed: %s" %
-			str(envelope.get("error", "invalid response") if envelope is Dictionary
-				else "invalid response"))
-		return []
-	var rows: Array = envelope.get("rows", [])
-	var stats: Dictionary = envelope.get("stats", {})
-	var shape_links := int(stats.get("shape_links", -1))
-	var controls_ok := int(stats.get("total", -1)) == rows.size() \
-			and int(stats.get("joined_preset", -1)) == rows.size() \
-			and int(stats.get("target_other", -1)) == 0 \
-			and shape_links >= rows.size() \
-			and int(stats.get("rotated_control_hits", -1)) == 0
-	if not controls_ok:
-		_say("game source: lighting zones - rejected controls: real=%d/%d rotated=%d other=%d" % [
-			rows.size(), shape_links, int(stats.get("rotated_control_hits", -1)),
-			int(stats.get("target_other", -1))])
-		return []
-
-	var out: Array = []
-	for item in rows:
-		if not (item is Dictionary):
-			continue
-		var row: Dictionary = item
-		var x: Array = row.get("xform", [])
-		if x.size() != 12:
-			continue
-		var exposure := _zone_exposure(str(row.get("preset", "")))
-		if exposure.is_empty():
-			# A zone with no decoded override cannot alter the environment. Keep it
-			# out instead of silently substituting the outdoor EV.
-			continue
-		var cooked := row.duplicate()
-		cooked["transform"] = Transform3D(Basis(
-			Vector3(float(x[0]), float(x[1]), float(x[2])),
-			Vector3(float(x[3]), float(x[4]), float(x[5])),
-			Vector3(float(x[6]), float(x[7]), float(x[8]))),
-			Vector3(float(x[9]), float(x[10]), float(x[11])))
-		cooked["ev"] = float(exposure.get("ev", 0.0))
-		cooked["ev_max"] = float(exposure.get("ev_max", 0.0))
-		out.append(cooked)
-	_lighting_zones_cache = out
-	_lighting_zones_stats = stats.duplicate()
-	_lighting_zones_done = true
-	_say("game source: lighting zones - %d usable of %d direct joins / %d shape links; control 0/%d; %d channel-routed omitted" % [
-		out.size(), rows.size(), shape_links, shape_links,
-		int(stats.get("omitted_no_preset", 0))])
-	return _lighting_zones_cache
-
-
-# Dominant outdoor preset imported by the level root. Shared common presets are
-# excluded by path; thermal is an optics mode; a sun-carrying preset wins over
-# thin overlays; visibility breaks the remaining tie. `candidates` deliberately
-# remains >1 for mp_contaminated because its two equal candidates author the
-# same sun and the data exposes no proven discriminator.
-func _active_ve() -> Dictionary:
-	if not _active_ve_cache.is_empty():
-		return _active_ve_cache
-	if src == null or walk == null or types == null:
-		return {}
-	# A lighting-only open deliberately skips the placement walk, so its stats
-	# have no root. Locate the root in the mounted EBX index exactly as the native
-	# reader does instead of making lighting depend on Original Objects.
-	var root := ""
-	for key in src.ebx.keys():
-		var n := str(key).to_lower()
-		if n.ends_with(".ebx"):
-			n = n.substr(0, n.length() - 4)
-		# Also under the 1.4.3.0 group folder (levels/gr/<level>/<level>).
-		if n.contains("/levels/") and BF6Source.level_root_tail(n, level.to_lower()):
-			root = n
-			break
-	if root == "":
-		return {}
-	if root.to_lower().ends_with(".ebx"):
-		root = root.substr(0, root.length() - 4)
-	var raw := src.get_ebx(root)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-	var paths: Array[String] = []
-	for imp in e.imports:
-		var target = walk.gi.get(str((imp as Dictionary)["partition"]))
-		if target == null:
-			continue
-		var n := str(target).to_lower()
-		if n.ends_with(".ebx"):
-			n = n.substr(0, n.length() - 4)
-		var leaf := n.get_file()
-		if not n.contains("/levels/") or not leaf.begins_with("ve_") \
-				or leaf.contains("thermal"):
-			continue
-		if not paths.has(n):
-			paths.append(n)
-	paths.sort()
-	var inspected: Array = []
-	var any_sun := false
-	for path in paths:
-		var c := _inspect_ve(path)
-		if c.is_empty():
-			continue
-		inspected.append(c)
-		any_sun = any_sun or bool(c["has_sun"])
-	var best: Dictionary = {}
-	var kept := 0
-	for c in inspected:
-		if any_sun and not bool((c as Dictionary)["has_sun"]):
-			continue
-		kept += 1
-		if best.is_empty() or float((c as Dictionary)["visibility"]) \
-				> float(best["visibility"]):
-			best = c
-	if best.is_empty():
-		return {}
-	best = best.duplicate()
-	best["candidates"] = kept
-	_active_ve_cache = best
-	return _active_ve_cache
-
-
-# The subset of the active VisualEnvironment that the Godot renderer consumes,
-# read directly from the installed game. Unknown-unit fields are still reported
-# (EV, tint, raw shadow distance) but are not converted by highpoly_lighting
-# until a conversion has a control.
-func environment_lighting() -> Dictionary:
-	if not _environment_cache.is_empty():
-		return _environment_cache
-	var active := _active_ve()
-	if active.is_empty():
-		return {}
-	var raw := src.get_ebx(str(active["path"]))
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-	var comp := {}
-	for i in range(e.instance_offsets.size()):
-		var tg := e.instance_type(i).to_lower().left(8)
-		if not comp.has(tg):
-			comp[tg] = e.read_instance(i)
-	var out := {
-		"preset": str(active["path"]).get_file(),
-		"preset_path": str(active["path"]),
-		"preset_candidates": int(active["candidates"]),
-		"visibility": float(active["visibility"]),
-	}
-	var d: Dictionary = comp.get(VE_SUN, {})
-	_ve_put_scalar(out, "sun_az", d, 0x8748D69F)
-	_ve_put_scalar(out, "sun_el", d, 0x04FF06A2)
-	_ve_put_scalar(out, "sun_lux", d, 0x130859CD)
-	_ve_put_vec(out, "sun_color", d, 0x7215CE32)
-
-	d = comp.get(VE_SKY, {})
-	_ve_put_scalar(out, "sky_rotation", d, F_PANORAMIC_ROTATION)
-	_ve_put_scalar(out, "sun_disc", d, 0x029A4B53)
-	_ve_put_scalar(out, "aerial_perspective", d, 0x9C856374)
-
-	d = comp.get(VE_FOG, {})
-	_ve_put_scalar(out, "fog_height_enabled", d, 0x93D3A211)
-	_ve_put_scalar(out, "fog_color_enabled", d, 0xE341E90D)
-	_ve_put_scalar(out, "fog_gradient_enabled", d, 0xF9763CB8)
-	out["fog_enabled"] = bool(out.get("fog_height_enabled", false)) \
-		or bool(out.get("fog_color_enabled", false)) \
-		or bool(out.get("fog_gradient_enabled", false))
-	_ve_put_vec(out, "fog_color", d, 0x0501B552)
-	_ve_put_scalar(out, "fog_dist_start", d, 0x682D7A3F)
-	_ve_put_scalar(out, "fog_dist_end", d, 0x4D8196A9)
-	_ve_put_scalar(out, "fog_altitude", d, 0x8CC2F99E)
-	_ve_put_scalar(out, "fog_depth", d, 0x0D3FCE6F)
-	_ve_put_scalar(out, "volumetrics", d, 0x00CBC378)
-	_ve_put_scalar(out, "sun_scatter", d, 0xCA5E0FED)
-
-	d = comp.get(VE_EXPOSURE, {})
-	_ve_put_scalar(out, "auto_exposure", d, 0xF56BC9AC)
-	_ve_put_scalar(out, "ev", d, 0xE1877E34)
-	_ve_put_scalar(out, "ev_max", d, 0xA8AE270A)
-	_ve_put_scalar(out, "exposure_compensation", d, 0xB308393B)
-	_ve_put_vec(out, "bloom_scale", d, 0x4EC18B88)
-
-	d = comp.get(VE_GRADING, {})
-	_ve_put_scalar(out, "grading_enabled", d, 0x565A3EB0)
-	_ve_put_vec(out, "grade_brightness", d, 0xB3B14547)
-	_ve_put_vec(out, "grade_contrast", d, 0x5FF33110)
-	_ve_put_vec(out, "grade_saturation", d, 0x3C6395F8)
-
-	d = comp.get(VE_WHITE, {})
-	_ve_put_scalar(out, "white_temperature", d, 0xDF6C5DBF)
-	_ve_put_scalar(out, "white_tint", d, 0xC155FC7D)
-
-	d = comp.get(VE_AO, {})
-	_ve_put_scalar(out, "ao_affects_sun", d, 0x816CF0B4)
-	_ve_put_scalar(out, "hbao_radius", d, 0x34444CFD)
-	_ve_put_scalar(out, "hbao_contrast", d, 0xB2994B82)
-
-	d = comp.get(VE_SHADOW, {})
-	if d.has(0x217E6BAB):
-		var sd = _ve_scalar(d, 0x217E6BAB)
-		if sd is float or sd is int:
-			out["sun_shadow_distance"] = [float(sd)]
-
-	d = comp.get(VE_GI, {})
-	_ve_put_vec(out, "gi_terrain_color", d, 0x3C77E4C8)
-	_ve_put_vec(out, "gi_sky_color", d, 0xF97F2EC3)
-	_ve_put_vec(out, "gi_ground_color", d, 0x045FF8C7)
-	_ve_put_vec(out, "gi_sun_color", d, 0xBFF74A5B)
-
-	if not out.has("sun_az") or not out.has("sun_el") or not out.has("sun_lux"):
-		return {}
-	_environment_cache = out
-	_say("game source: environment - %s, %d candidate(s), %d fields"
-		% [out["preset"], out["preset_candidates"], out.size()])
-	return _environment_cache
-
-
-# {texture, luminance_scale, rotation} or {} when the level has no panorama.
-func sky() -> Dictionary:
-	if src == null or walk == null or types == null:
-		return {}
-	if not _sky_cache.is_empty():
-		return _sky_cache
-	# The exact dominant preset selected from component content + visibility.
-	# Falling through to another imported ve_* when it has a panorama would mix
-	# two presets and produce a convincing but non-game combination.
-	for ve in _ve_candidates():
-		var got := _sky_from(str(ve))
-		if not got.is_empty():
-			_sky_cache = got
-			_say("game source: sky - %s, luminance scale %.0f"
-				% [str(ve).get_file(), got["luminance_scale"]])
-			return got
-	return {}
-
-
-func _sky_from(ve: String) -> Dictionary:
-	var raw := src.get_ebx(ve)
-	if raw.is_empty():
-		return {}
-	var e := BF6Ebx.new(types, walk.gi)
-	if not e.parse(raw):
-		return {}
-
-	# THE PANORAMA IS AN IMPORT, NOT A FIELD VALUE. PanoramicTexture is present
-	# on the sky component and is NULL in the shipped data - the pointer is
-	# resolved at load - while SkyType and LuminanceScale beside it are set. So
-	# the texture is found the only way it can be: among the partition's
-	# imports, which name it directly.
-	var pano := _panorama_import(e)
-	if pano == "":
-		return {}
-	var tex = _texture_for_asset(pano)
-	if tex == null:
-		return {}
-	var img: Image = (tex as ImageTexture).get_image()
-	if img == null:
-		return {}
-
-	# The scalars DO come from the component, where they are real.
-	var lum := 0.0
-	var rot := 0.0
-	for i in range(e.instance_offsets.size()):
-		var inst = e.read_instance(i)
-		if not (inst is Dictionary) or not (inst as Dictionary).has(F_LUMINANCE_SCALE):
-			continue
-		var d: Dictionary = inst
-		lum = float(d.get(F_LUMINANCE_SCALE, 0.0))
-		rot = float(d.get(F_PANORAMIC_ROTATION, 0.0))
-		break
-	return {
-		"texture": ImageTexture.create_from_image(_to_equirect(img)),
-		"luminance_scale": lum,
-		"rotation": rot,
-		"preset": ve.get_file(),
-		"panorama": pano.get_file(),
-	}
-
-
-# The sky panorama among a VE partition's imports.
-#
-# Told apart by name, because that is what distinguishes them: the same
-# partition also imports hdrcube_<level>_NN (the reflection cubemap, not a sky)
-# and t_skypanoramicprocedural_b (a procedural fallback, not this level's
-# painted sky). Both would resolve and both would be wrong.
-func _panorama_import(e: BF6Ebx) -> String:
-	var best := ""
-	for imp in e.imports:
-		var t = walk.gi.get(str((imp as Dictionary)["partition"]))
-		if t == null:
-			continue
-		var n := str(t).to_lower()
-		if n.ends_with(".ebx"):
-			n = n.substr(0, n.length() - 4)
-		var leaf := n.get_file()
-		if not leaf.contains("panoramicsky"):
-			continue
-		if leaf.contains("procedural") or leaf.contains("hdrcube"):
-			continue
-		if leaf.contains(level):
-			return n              # this level's own sky wins outright
-		if best == "":
-			best = n
-	return best
-
-
-# Decode a texture by ASSET NAME rather than by guid. The panorama is reached
-# through the import list, which already gives the name.
+# Decode a texture by ASSET NAME rather than by guid, for callers that reach a
+# texture through an import list, which already gives the name.
 func _texture_for_asset(asset: String):
 	var an := asset.to_lower()
 	if an.ends_with(".ebx"):
@@ -5859,15 +4421,6 @@ func _texture_for_asset(asset: String):
 	return t
 
 
-var _sky_cache := {}
-
-
-# The active preset only. Kept as an Array for the existing sky loop.
-func _ve_candidates() -> Array:
-	var active := _active_ve()
-	return [active["path"]] if not active.is_empty() else []
-
-
 # A PointerRef's FILE guid, whichever shape the deserializer handed back.
 static func _ref_guid(v):
 	if v is Dictionary:
@@ -5876,29 +4429,6 @@ static func _ref_guid(v):
 			if d.has(k) and str(d[k]) != "":
 				return str(d[k])
 	return null
-
-
-# 4:1 sky-dome panorama -> the 2:1 equirect PanoramaSkyMaterial expects.
-#
-# Upper half is the panorama (zenith at the top, horizon at its bottom row);
-# lower half repeats the horizon row, so below the horizon reads as haze rather
-# than as a mirrored or stretched sky.
-static func _to_equirect(src_img: Image) -> Image:
-	var w := src_img.get_width()
-	var h := src_img.get_height()
-	if w <= 0 or h <= 0 or w < h * 3:
-		return src_img            # already 2:1-ish; leave it alone
-	var img := src_img.duplicate() as Image
-	if img.is_compressed() and img.decompress() != OK:
-		return src_img
-	var out := Image.create(w, h * 2, false, img.get_format())
-	out.blit_rect(img, Rect2i(0, 0, w, h), Vector2i(0, 0))
-	# The horizon row, carried down. Copied as a 1-pixel-tall strip per row
-	# rather than pixel by pixel: a 4096-wide sky is 4 million set_pixel calls
-	# otherwise, which is seconds of stall for a gradient nobody looks at.
-	for y in range(h, h * 2):
-		out.blit_rect(img, Rect2i(0, h - 1, w, 1), Vector2i(0, y))
-	return out
 
 
 # ---------------------------------------------------------------------------
@@ -6031,7 +4561,6 @@ const PORTAL_PREFIX := "pf_portal_"
 
 var _obj_walk: BF6Walk = null
 var _obj_cache := {}                   # portal name (lower) -> Mesh-bearing Node3D or null
-var _obj_lights := {}                  # portal name (lower) -> [light record], object-local
 
 
 # The prefab for a Portal object name, assembled, or null.
@@ -6144,7 +4673,6 @@ func object_rows(portal_name: String) -> Array:
 	var ref = _resolve_object(key)
 	if ref == null:
 		_obj_cache[key] = []
-		_obj_lights[key] = []
 		return []
 
 	# A SECOND WALKER, sharing the first's catalogue. build_catalog is the
@@ -6156,27 +4684,16 @@ func object_rows(portal_name: String) -> Array:
 		_obj_walk.by_name = walk.by_name
 		_obj_walk.gi = walk.gi
 		_obj_walk.scope_index = walk.scope_index
-		# A PLACED PROP'S OWN LIGHTS. This walker was built for meshes and asked
-		# for no entities, so a lamp dropped into a scene from the SDK arrived
-		# with its geometry and none of its lighting — not misplaced, absent.
-		# Collecting them costs the same pass; object_lights() is what reads them
-		# and nothing is built unless a caller asks.
-		for gd in LIGHT_TYPES:
-			_obj_walk.want_types[str(gd)] = "light"
-		# Kept in step with the level walk's collector set: a lamp fixture
-		# dropped into a scene carries the same embedded decal volume it
-		# carries on the map, and two walkers with different field lists is
-		# how one of them silently loses a collector later.
+		# The decal volumes, as the level walk collects them: a lamp fixture
+		# dropped into a scene carries the same embedded decal volume it carries
+		# on the map. No light entities: placed-prop lights went with the
+		# fork's Prop Lighting switch (F-08), and this walker is not cached.
 		for gd in EDV_TYPES:
 			_obj_walk.want_types[str(gd)] = "edv"
-		_obj_walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
+		_obj_walk.want_fields = EDV_FIELDS
 	_obj_walk.rows.clear()
 	_obj_walk.ents.clear()
 	_obj_walk.walk(str(ref), BF6Walk.IDENT, {}, 0)
-	# Read off the same pass, in the object's own local space, and cached beside
-	# the rows: object_rows is memoised, so a later object_lights() call would
-	# otherwise be looking at whichever object was assembled most recently.
-	_obj_lights[key] = _light_records(_obj_walk.ents)
 
 	var out: Array = []
 	for r in _obj_walk.rows:
@@ -6208,21 +4725,6 @@ func object_rows(portal_name: String) -> Array:
 			_group_meta[gk] = [res_name, scope, str(row.get("src", "")), vh]
 	_obj_cache[key] = out
 	return out
-
-
-# The light records a placed Portal object carries, in the object's own local
-# space, in the same schema as lights.json.
-#
-# Not wired into object_node(): whether a scene full of placed lamps should also
-# build thousands of Light3D nodes is a budget decision (Forward+ caps clustered
-# elements at 512 in view), not something a mesh assembler should decide on its
-# own. This is the data, ready for whatever does.
-func object_lights(portal_name: String) -> Array:
-	var key := portal_name.to_lower()
-	if not _obj_lights.has(key):
-		object_rows(portal_name)
-	var got = _obj_lights.get(key, [])
-	return got if got is Array else []
 
 
 # THE BUNDLE THAT SHIPPED THIS RESOURCE, which is what a depot is keyed on.
@@ -6693,6 +5195,7 @@ func compact_caches(root: Node) -> Dictionary:
 
 func release_caches() -> Dictionary:
 	var before := cache_stats()
+	flush_packs()
 	# The read-ahead serves this session's build; released with everything else.
 	_readahead_stop()
 	_pc_level = ""
@@ -6706,14 +5209,6 @@ func release_caches() -> Dictionary:
 	_mesh_by_sig.clear()
 	_obj_cache.clear()
 	_depot_cache.clear()
-	_sky_cache.clear()
-	_active_ve_cache.clear()
-	_environment_cache.clear()
-	_zone_exposure_cache.clear()
-	_lighting_zones_cache.clear()
-	_lighting_zones_stats.clear()
-	_lighting_zones_done = false
-	_water_look_cache.clear()
 	_decal_tex_cache.clear()
 	# _dressed WAS MISSING, and it is the one that made the mesh half of this a
 	# lie. It holds [ArrayMesh, keys, scope, variation, name] for every mesh ever
@@ -6731,9 +5226,9 @@ func release_caches() -> Dictionary:
 	_litpack_cache.clear()
 	# THE TWO THAT MADE CLEARING THE OTHERS POINTLESS.
 	#
-	# _mat_by_look and _emissive_mats hold MATERIALS, and a material holds its
+	# _mat_by_look holds MATERIALS, and a material holds its
 	# textures. So dropping _tex_cache and _mat_cache above freed nothing at all
-	# while these still referenced the same objects: measured, release_caches
+	# while it (and the old emissive list) still referenced the same objects: measured, release_caches
 	# gave back 1,617 MB of a 4,379 MB build and the rest was here.
 	#
 	# Everything else on this list is the same mistake in smaller print - a
@@ -6741,7 +5236,6 @@ func release_caches() -> Dictionary:
 	# that empties it. Compiled from the member list rather than from memory,
 	# because that is how the first seven got missed.
 	_mat_by_look.clear()
-	_emissive_mats.clear()
 	_res_for.clear()
 	_var_live.clear()
 	_sec_keys.clear()
@@ -6749,8 +5243,6 @@ func release_caches() -> Dictionary:
 	_pal_canon_cache.clear()
 	_scatter_cache.clear()
 	_scatter_done = false
-	_obj_lights.clear()
-	_water_sim.clear()
 	_hm.clear()
 	# Windows will often hold the freed pages rather than returning them to the
 	# OS, so Task Manager can stay high while this genuinely worked. Judge it by
@@ -6816,7 +5308,6 @@ func cache_stats() -> Dictionary:
 		"decal_tex": _decal_tex_cache.size(),
 		"smooth": _smooth_cache.size(),
 		"litpack": _litpack_cache.size(),
-		"water_look": _water_look_cache.size(),
 	}
 	var meshes := 0
 	var surfaces := 0
@@ -6843,7 +5334,6 @@ func cache_stats() -> Dictionary:
 		# freed by dropping the cache slot because the scene holds it too.
 		"materials_over_surfaces": maxi(0,
 			_mat_cache.size() - int(surfaces)),
-		"sky_entries": _sky_cache.size(),
 		# None of these caches evicts. Recorded so the number is not mistaken
 		# for a working set that would come back under pressure.
 		"evicts": false,
@@ -7141,7 +5631,11 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	#
 	# This is a file derived from the player's own install, not a download. The
 	# same standard the walk cache and height_game.r16 already meet.
-	var cached = _geom_load(kc) if not _precache_active() else null
+	# NO LONGER SKIPPED UNDER THE PRECACHE (OPT-01). The precache stores byte
+	# locations, not built meshes: every mesh was still fetched, merged and
+	# sliced on every build, cached or not - the main reason a cached load
+	# looked the same as a cold one. The pack holds the finished surfaces.
+	var cached = _geom_load(kc)
 	if cached is ArrayMesh:
 		# UNLESS THIS SCOPE NEEDS THE MESH CUT DIFFERENTLY. The cached mesh was
 		# merged one surface per shader state, which is the right answer for
@@ -7179,10 +5673,13 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var _t1 := Time.get_ticks_usec()
 	var mat_us := 0
 	var assembled: Array = []
+	_captured = []
+	_capturing = _geom_pack != null
 	if maxi(lod, PROP_LOD) == 0:
 		assembled = _assemble_precached(res_name, scope, var_hash)
 	if assembled.is_empty():
 		assembled = _assemble_live(res_name, lod, scope, var_hash)
+	_capturing = false
 	if assembled.is_empty():
 		return null
 	n_geom_miss += 1
@@ -7213,8 +5710,9 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	# would hand the next scope a mesh split for someone else's colours; the
 	# merged spelling stays on disk and the ~2% of groups that need the split
 	# read the game again each session (n_pal_rebuilt).
-	if not split and not _precache_active():
-		_geom_save(kc, kept, am)
+	if not split:
+		_geom_save(kc, kept, am, _captured)
+	_captured = []
 	if prepare_geometry_only:
 		return am
 	_dress(am, kept, scope, var_hash)
@@ -7369,6 +5867,8 @@ func _surfaces_from_blob(b: PackedByteArray, res_name: String, scope: String, va
 		t_asm_slice += _tsurf - _tarr
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		am.surface_set_name(am.get_surface_count() - 1, sname)
+		if _capturing:
+			_captured.append([sname, arr])
 		t_asm_surface += Time.get_ticks_usec() - _tsurf
 		kept.append(sname)
 	t_asm_build += Time.get_ticks_usec() - _td
@@ -7678,6 +6178,8 @@ func _assemble_script(d: PackedByteArray, info: Dictionary, li: int, chunk: Pack
 		# thing to be missing.
 		var sname := _surface_name(str(key), key_sel, key_canon)
 		am.surface_set_name(am.get_surface_count() - 1, sname)
+		if _capturing:
+			_captured.append([sname, arr])
 		# `kept`, not `order`: a key whose sections all dropped out contributes no
 		# surface, so recording it would put the surface list and the key list out
 		# of step — and _sig_for reads them as parallel.
@@ -7787,17 +6289,33 @@ func _precache_active() -> bool:
 # separate queue is needed. The budget is a ceiling on bytes, not on entries: a
 # map's meshes differ by three orders of magnitude in size and counting them
 # would let a handful of big ones blow past any sensible limit.
+# EVICTION IN O(1) (OPT-13). It took _pc_kept.keys()[0], which builds the whole
+# key array on every eviction - quadratic once the 256 MB budget is full, and a
+# suspect for the unattributed part of "parse + build ArrayMesh". A FIFO of
+# names with a head index gives the same oldest-first order.
+var _pc_fifo: Array = []
+var _pc_head := 0
+
 func _pc_keep(res_name: String, record: PackedByteArray) -> void:
 	if record.is_empty() or _pc_kept.has(res_name):
 		return
+	if _pc_kept.is_empty():
+		_pc_fifo.clear()               # cleared elsewhere (release, map change)
+		_pc_head = 0
 	_pc_kept[res_name] = record
+	_pc_fifo.append(res_name)
 	_pc_kept_bytes += record.size()
-	while _pc_kept_bytes > PRECACHE_KEEP_BUDGET and not _pc_kept.is_empty():
-		var oldest: String = _pc_kept.keys()[0]
+	while _pc_kept_bytes > PRECACHE_KEEP_BUDGET and _pc_head < _pc_fifo.size():
+		var oldest: String = _pc_fifo[_pc_head]
 		if oldest == res_name:
 			break                      # never evict what was just asked for
-		_pc_kept_bytes -= (_pc_kept[oldest] as PackedByteArray).size()
-		_pc_kept.erase(oldest)
+		_pc_head += 1
+		if _pc_kept.has(oldest):
+			_pc_kept_bytes -= (_pc_kept[oldest] as PackedByteArray).size()
+			_pc_kept.erase(oldest)
+	if _pc_head > 4096 and _pc_head * 2 > _pc_fifo.size():
+		_pc_fifo = _pc_fifo.slice(_pc_head)
+		_pc_head = 0
 
 
 func _precache_fetch(first: String) -> void:
@@ -7873,14 +6391,21 @@ func _assemble_precached(res_name: String, scope: String, var_hash: int) -> Arra
 static func texture_order_path(level_name: String) -> String:
 	return TEXTURE_ORDER_DIR.path_join(level_name + ".txt")
 
-# First line: the add-on recipe the order was recorded with (material rules decide
-# which textures are asked for). A stale order only lowers the read-ahead hit rate.
+# First line: the texture-order FAMILY recipe (reader scripts + a version), not
+# the whole add-on (OPT-03). Keyed on the full recipe, every plugin build threw
+# the order away, preparation no longer records one, and the read-ahead
+# reported "had ready 0" on every open. Material rules decide which textures are
+# asked for, but a stale order only lowers the hit rate - it never changes what
+# is drawn - so the misses are simply learned and appended (_learn_texture).
+static func texture_order_header() -> String:
+	return preload("highpoly_install_cache.gd").family_recipe("texture_order")
+
 func _load_texture_order() -> void:
 	var path := texture_order_path(level)
 	if not FileAccess.file_exists(path):
 		return
 	var lines := FileAccess.get_file_as_string(path).split("\n", false)
-	if lines.is_empty() or lines[0] != preload("highpoly_install_cache.gd").recipe():
+	if lines.is_empty() or lines[0] != texture_order_header():
 		return
 	for i in range(1, lines.size()):
 		var n := lines[i]
@@ -7889,7 +6414,11 @@ func _load_texture_order() -> void:
 			_tex_order.append(n)
 
 func _learn_texture(an: String) -> void:
-	if record_textures or not _pc_ready or _pc_level != level or not _tex_order.is_empty() or _learned_seen.has(an):
+	# LEARNS MISSES TOO. It used to learn only while no order existed, so the
+	# first open's order was frozen forever and every texture a later build
+	# asked for outside it was a read-ahead miss.
+	if record_textures or not _pc_ready or _pc_level != level or _learned_seen.has(an) \
+			or _tex_position.has(an):
 		return
 	_learned_seen[an] = true
 	_learned.append(an)
@@ -7900,14 +6429,17 @@ func _learn_texture(an: String) -> void:
 func _save_learned() -> void:
 	if _learned_level.is_empty() or _learned.size() <= _learned_saved:
 		return
-	if save_texture_order(_learned_level, _learned):
+	# The loaded order first, then what this session learned beyond it.
+	var names := PackedStringArray(_tex_order) if _learned_level == level else PackedStringArray()
+	names.append_array(_learned)
+	if save_texture_order(_learned_level, names):
 		_learned_saved = _learned.size()
 
 
 static func save_texture_order(level_name: String, names: PackedStringArray) -> bool:
 	DirAccess.make_dir_recursive_absolute(TEXTURE_ORDER_DIR)
 	var seen := {}
-	var lines := PackedStringArray([preload("highpoly_install_cache.gd").recipe()])
+	var lines := PackedStringArray([texture_order_header()])
 	for n in names:
 		if seen.has(n):
 			continue
@@ -8124,6 +6656,10 @@ var n_geom_loaded := 0
 var n_geom_saved := 0
 var t_geom_load := 0
 var t_geom_save := 0
+var _tex_pack: RefCounted = null    # OPT-02, opened by _texpack_open
+var n_texpack_hits := 0
+var n_texpack_saved := 0
+var t_texpack_load := 0
 
 
 func _geom_open() -> void:
@@ -8160,46 +6696,188 @@ func _geom_open() -> void:
 		vsfx = "_vfull"
 	var d := "user://bf6_geom/%s_%s_g%d%s%s" % [level, sig, GEOM_EPOCH,
 		lodsfx, vsfx]
+	_geom_use_dir(d)
+
+
+# ONE PACK PER MAP DIRECTORY (OPT-01), never deleted at launch any more; the
+# HP-015 sweep removes superseded directories, newest per map kept. Loose .res
+# files from the old one-file-per-mesh cache in the same directory are dropped:
+# nothing reads them.
+const GEOM_PACK_VERSION := 1
+var _geom_pack: RefCounted = null
+var _captured: Array = []          # [surface name, arrays] of the mesh being built
+var _capturing := false
+
+
+func _geom_use_dir(d: String) -> void:
+	if _geom_pack != null:
+		_geom_pack.close()
+		_geom_pack = null
+	_geom_dir = ""
 	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
 		return
 	_geom_dir = d
-
-
-# md5 of the key, not the key: a MeshSet name is a long path with slashes in it,
-# and those are directories rather than characters as far as a file name is
-# concerned.
-func _geom_path(kc: String) -> String:
-	return "%s/%s.res" % [_geom_dir, kc.md5_text()]
+	for f in DirAccess.get_files_at(d):
+		if str(f).ends_with(".res"):
+			DirAccess.remove_absolute(d.path_join(f))
+	var pk = Pack.new()
+	var t := Time.get_ticks_msec()
+	var n: int = pk.open(d, d.get_file(), GEOM_PACK_VERSION)
+	_geom_pack = pk
+	_say("geometry pack %s: %d mesh(es) on disk, opened in %d ms%s" % [d.get_file(), n,
+		Time.get_ticks_msec() - t, (", %d damaged segment(s) dropped" % pk.bad_segments)
+			if pk.bad_segments > 0 else ""])
 
 
 func _geom_load(kc: String):
-	if _geom_dir == "" or not geom_cache_read or preload("highpoly_install_cache.gd").bypass:
-		return null
-	var p := _geom_path(kc)
-	if not ResourceLoader.exists(p):
+	if _geom_pack == null or not geom_cache_read or preload("highpoly_install_cache.gd").bypass:
 		return null
 	var t := Time.get_ticks_usec()
-	# CACHE_MODE_IGNORE: this reader keeps its own share table (_mesh_by_sig),
-	# which is keyed on the materials as well as the mesh. Letting Godot's
-	# resource cache hand the same instance to two callers would put a mesh from
-	# one scope into another with no way to tell.
-	var r = ResourceLoader.load(p, "ArrayMesh", ResourceLoader.CACHE_MODE_IGNORE)
+	var bytes: PackedByteArray = _geom_pack.get_bytes(kc)
+	if bytes.is_empty():
+		return null
+	var r: ArrayMesh = Pack.decode_mesh(bytes)
 	t_geom_load += Time.get_ticks_usec() - t
-	if not (r is ArrayMesh) or (r as ArrayMesh).get_surface_count() == 0:
+	if r == null or r.get_surface_count() == 0:
 		return null
 	n_geom_loaded += 1
 	return r
 
 
-func _geom_save(kc: String, keys: Array, am: ArrayMesh) -> void:
-	if _geom_dir == "" or keys.is_empty():
+# `arrays` are the [name, arrays] pairs the assembler captured; without them
+# (an older caller) nothing is written rather than reading the mesh back from
+# the GPU.
+func _geom_save(kc: String, keys: Array, am: ArrayMesh, arrays: Array = []) -> void:
+	if _geom_pack == null or keys.is_empty() or arrays.size() != am.get_surface_count():
 		return
 	var t := Time.get_ticks_usec()
-	var destination := _geom_path(kc)
-	var temporary := destination.trim_suffix(".res") + ".%d.part.res" % OS.get_process_id()
-	if ResourceSaver.save(am, temporary) == OK and DirAccess.rename_absolute(temporary, destination) == OK:
+	if _geom_pack.put(kc, Pack.encode_surfaces(arrays)):
 		n_geom_saved += 1
 	t_geom_save += Time.get_ticks_usec() - t
+
+
+# Finish both packs' open segments so what this build learned is on disk.
+# Called at the end of a build, on release_caches and on a map change. Logs
+# what the packs served and wrote, so a real run shows the hit rates.
+func flush_packs() -> void:
+	var t := Time.get_ticks_msec()
+	if _geom_pack != null:
+		_geom_pack.flush()
+	if _tex_pack != null:
+		_tex_pack.flush()
+	var ms := Time.get_ticks_msec() - t
+	var asks := n_geom_loaded + n_geom_miss
+	if asks > 0 or n_texpack_hits + n_texpack_saved > 0:
+		var line := ("cache packs for %s: geometry %d of %d mesh(es) from the pack (%.0f ms), "
+			% [level, n_geom_loaded, asks, t_geom_load / 1000.0]
+			+ "%d new saved (%.0f ms); textures %d from the pack (%.0f ms), %d decoded from the install, "
+			% [n_geom_saved, t_geom_save / 1000.0, n_texpack_hits, t_texpack_load / 1000.0,
+				int(tex_stats.get("decoded", 0))]
+			+ "%d new saved; flush %d ms" % [n_texpack_saved, ms])
+		_say(line)
+		HighpolyLog.info(line)
+
+
+# ---------------------------------------------------------------------------
+# THE TEXTURE PACK (OPT-02).
+#
+# Textures had no disk cache at all: every texture not already in this
+# session's memory was read from CAS, Oodle-decompressed, maybe compressed and
+# uploaded - 3.4 ms each, 12-13 s per Isolated objects build, on every build.
+# The image the build would have uploaded (capped, compressed, mipmapped) now
+# goes into a per-map pack, so a later build reads one record and uploads it.
+#
+# KEYED ON EVERYTHING THAT CHANGES THE PIXELS: the TOC signature (a game
+# patch), the texture family recipe (the decoder), TEXPACK_VERSION (bump on any
+# change to the post-decode steps in texture_named), the texture cap and the
+# VRAM mode. Not on the whole add-on recipe.
+const TEXPACK_VERSION := 1
+const TEXPACK_ROOT := "user://bf6_tex"
+
+
+static func texpack_dir_name(level_name: String, sig: String, recipe: String, cap: int,
+		vram: int) -> String:
+	var k := "%s|%s|%d|%d|%d" % [sig, recipe, TEXPACK_VERSION, cap, vram]
+	return "%s_%s" % [level_name, k.sha256_text().substr(0, 16)]
+
+
+func _texpack_open() -> void:
+	if _tex_pack != null:
+		_tex_pack.close()
+		_tex_pack = null
+	if not geom_cache or src == null or level == "" or record_textures:
+		return
+	var sig := src.signature()
+	var recipe: String = preload("highpoly_install_cache.gd").family_recipe("textures")
+	if sig == "" or recipe == "":
+		return
+	_texpack_use_dir(TEXPACK_ROOT.path_join(texpack_dir_name(level, sig, recipe,
+		texture_max_dim, int(HighpolyMapContext.vram_mode))))
+
+
+func _texpack_use_dir(d: String) -> void:
+	if _tex_pack != null:
+		_tex_pack.close()
+		_tex_pack = null
+	var pk = Pack.new()
+	var t := Time.get_ticks_msec()
+	var n: int = pk.open(d, d.get_file(), TEXPACK_VERSION)
+	if pk.dir == "":
+		return
+	_tex_pack = pk
+	_say("texture pack %s: %d texture(s) on disk, opened in %d ms%s" % [d.get_file(), n,
+		Time.get_ticks_msec() - t, (", %d damaged segment(s) dropped" % pk.bad_segments)
+			if pk.bad_segments > 0 else ""])
+
+
+func _texpack_fetch(an: String):
+	if _tex_pack == null or preload("highpoly_install_cache.gd").bypass:
+		return null
+	var t := Time.get_ticks_usec()
+	var bytes: PackedByteArray = _tex_pack.get_bytes(an)
+	if bytes.is_empty():
+		return null
+	var img: Image = Pack.decode_image(bytes)
+	t_texpack_load += Time.get_ticks_usec() - t
+	if img == null:
+		return null
+	n_texpack_hits += 1
+	return img
+
+
+func _texpack_store(an: String, img: Image) -> void:
+	if _tex_pack == null or img == null or img.is_empty():
+		return
+	if _tex_pack.put(an, Pack.encode_image(img)):
+		n_texpack_saved += 1
+
+
+# What the panel shows for a map: meshes and textures in its newest packs.
+static func pack_info(level_name: String) -> Dictionary:
+	return {"geom": _newest_pack_count("user://bf6_geom", level_name),
+		"tex": _newest_pack_count("user://bf6_tex", level_name)}
+
+
+static func pack_counts_in(path: String) -> int:
+	return Pack.count_in(path)
+
+
+static func _newest_pack_count(root: String, level_name: String) -> int:
+	if level_name.is_empty() or not DirAccess.dir_exists_absolute(root):
+		return 0
+	var best := ""
+	var best_t := -1
+	for d in DirAccess.get_directories_at(root):
+		if not str(d).to_lower().begins_with(level_name.to_lower() + "_"):
+			continue
+		var p := root.path_join(d)
+		var t := 0
+		for f in DirAccess.get_files_at(p):
+			t = maxi(t, int(FileAccess.get_modified_time(p.path_join(f))))
+		if t > best_t:
+			best_t = t
+			best = p
+	return Pack.count_in(best) if best != "" else 0
 
 
 # The merge keys a cached mesh carries, recovered from its surface names.
@@ -8307,7 +6985,6 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_tint_mask_cache.clear()
 	_decal_tex_cache.clear()
 	_smooth_cache.clear()
-	_emissive_mats.clear()
 	# THE ASSEMBLED-OBJECT CACHE, AND ESPECIALLY ITS FAILURES.
 	#
 	# object_rows caches a NOT-FOUND as an empty array, and nothing was clearing
@@ -8319,7 +6996,6 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	# It is derived from OUR name rules, not from the game, so it belongs here
 	# with the other things a code change invalidates.
 	_obj_cache.clear()
-	_obj_lights.clear()
 	_foliage_shader = null
 	_prop_tint_shader = null
 	# HELD SHADERS MUST BE DROPPED HERE OR AN EDIT TO ONE NEVER REACHES THE
@@ -8970,10 +7646,8 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	if emis != null:
 		mat.emission_enabled = true
 		mat.emission_texture = emis
-		# The same switch as the shader path, so a lamp does not depend on which
-		# material class it happened to take.
-		mat.emission_energy_multiplier = prop_emission
-		_emissive_mats.append(mat)
+		# As authored (multiplier 1.0). The Prop Lighting switch that used to
+		# drive this went with the fork's lighting removal (F-08).
 		any = true
 	if tint is Color:
 		# Applied UNIFORMLY, which is the honest approximation and not the whole
@@ -9967,42 +8641,6 @@ func _decal_sheet(file_guid, is_normal: bool):
 	return tex if varies else null
 
 
-# PROP LIGHTING, the emission half. Read by every material builder that binds an
-# emissive sheet. 1.0 is the sheet as authored; the panel raises it. Static so
-# the dock can set it and re-dress without threading it through every call.
-static var prop_emission := 1.0
-
-# EVERY MATERIAL THAT CARRIES A GLOW, so the switch can change one number on a
-# few dozen of them instead of rebuilding the map.
-#
-# Toggling Prop Lighting used to call invalidate_materials, which re-resolves
-# every surface from the depot: 13,097 surfaces, MEASURED AT 12.7 SECONDS in the
-# user's own log. All of that to change an emission multiplier - and only 53 of
-# 1,075 sampled records bind a lit sheet at all, so 99% of the work could not
-# change a pixel.
-#
-# The materials are shared between the map context and the props the builder
-# placed (both resolve through _mat_cache), so setting the parameter in place
-# updates everything at once with no rebuild and no re-dress.
-var _emissive_mats: Array = []
-
-
-# Returns how many materials it touched. Dead ones are dropped as they are found,
-# so a scene change does not leak them.
-func set_prop_emission(v: float) -> int:
-	prop_emission = v
-	var alive: Array = []
-	for m in _emissive_mats:
-		if not is_instance_valid(m):
-			continue
-		if m is ShaderMaterial:
-			(m as ShaderMaterial).set_shader_parameter("emission_energy", v)
-		elif m is StandardMaterial3D:
-			(m as StandardMaterial3D).emission_energy_multiplier = v
-		alive.append(m)
-	_emissive_mats = alive
-	return alive.size()
-
 var _smooth_cache := {}                # texture asset -> bool, does its alpha vary
 
 
@@ -10539,8 +9177,6 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
-		m.set_shader_parameter("emission_energy", prop_emission)
-		_emissive_mats.append(m)
 	return m
 
 
@@ -10571,8 +9207,6 @@ func _smooth_material(slots: Dictionary, tint):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
-		m.set_shader_parameter("emission_energy", prop_emission)
-		_emissive_mats.append(m)
 	# Uniform, as the plain path applies it: the per-texel paint mask is the
 	# masked-tint path above and is a separate decision from smoothness.
 	if tint is Color:
@@ -10727,6 +9361,16 @@ func texture_named(asset: String, is_normal := false, cap := -1):
 			_placeholder_tex = ImageTexture.create_from_image(Image.create(4, 4, false, Image.FORMAT_RGBA8))
 		_tex_cache[an] = _placeholder_tex
 		return _placeholder_tex
+	# THE TEXTURE PACK FIRST (OPT-02): an image this map's earlier build already
+	# decoded, capped and compressed is one read and an upload.
+	var _tpk = _texpack_fetch(an)
+	if _tpk is Image:
+		var _tu0 := Time.get_ticks_usec()
+		var pt := ImageTexture.create_from_image(_tpk as Image)
+		t_tex_up += Time.get_ticks_usec() - _tu0
+		_tex_cache[an] = pt
+		tex_stats["pack_hits"] = int(tex_stats.get("pack_hits", 0)) + 1
+		return pt
 	# EVERYTHING FROM HERE IS THE TEXTURE COST, and it is timed as one block
 	# because that is how it is paid: a miss reads the resource, decodes it,
 	# maybe compresses it and uploads it, and there is no useful place to stop
@@ -10841,6 +9485,7 @@ func texture_named(asset: String, is_normal := false, cap := -1):
 			and img.get_width() >= 4 and img.get_height() >= 4:
 		img.generate_mipmaps()
 	t_tex_post += Time.get_ticks_usec() - _tp
+	_texpack_store(an, img)        # for the next build of this map (OPT-02)
 	# THE UPLOAD ON ITS OWN. This is the one that hands work to the render
 	# thread, so if the texture cost is really a sync rather than a computation
 	# it shows up here and nowhere else.

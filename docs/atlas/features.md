@@ -24,9 +24,13 @@ No preload-blocker; preloaded (toggle:66; variants:20 reuses `_ray_hits_local_aa
 Known-unresolved (in comments): half-vs-full extent :796; per-effect sheets are a majority vote per graph :285; `EMITTER_BBOX` deliberately not wired :760; sheet-less non-billboard families not drawn.
 
 ## highpoly_gamemode.gd (495)
+> Removed in the fork (F-06): the Variant dropdown only switches map layers.
+
 `class_name HighpolyGamemode`. Rebuilds a gamemode as REAL owned Portal objects (7 scene kinds :48); labels owner=null, gameplay objects owner=root (:12-23). `data_path/modes/usable/pretty` :83-:112, `key_for` :123, `built` :148, `in_gamemode` :165, `clear` :176, `apply(root, map, mode, _unused)` :187. `SCHEMA 2` must match gmmine.
 
 ## highpoly_gmmine.gd (513)
+> Removed in the fork (F-06).
+
 `class_name HighpolyGmMine`. Mines `_layers_gameplay/<mode>` subworlds → `gamemode_markers.json`. `roots_of` :124 (main thread, snapshots ebx), `mine` :150 (**builds its OWN BF6Walk :175-181 — mining on the shared walker poured placements into the map from a worker**), `mine_to_disk` :467. `CAPTURE_MAX_AREA 1500.0` heuristic :108.
 
 ## highpoly_hlod.gd (617) — OFF
@@ -64,6 +68,8 @@ Data flow: dock "Drop marker"/note-Enter → `camera_point(dist=12.0)` :57 (12 m
 `class_name HighpolyPlacedCull`. Distance-culls the USER's placed objects via `visibility_range_*` (serialized! remembers and restores). Control = `mapctx_optimize` toggle:1216 pressed=true visible=false. LOD handover requires Tier.LOW :203. `release` :69, `apply(root, r, on)` :115. `SKIP` :24 deliberately excludes `_HIPOLY_PREVIEW` (culled with its object). Exemption ext > 600 m; bands r / 0.6r / 0.35r at 12 m / 3 m; floor 40.
 
 ## highpoly_previews.gd (602)
+> Removed in the fork (F-04); the Object Library keeps its stock icons.
+
 `class_name HighpolyPreviews`, Node, dock service. Object Library thumbnails rendered in an off-screen SubViewport, cached `user://highpoly/thumbs/<Name>__<mode>.png`. `build_all(progress)` :528 — **the model progress consumer: takes a Callable, owns no UI**. Perf history baked in comments (find_children walk was the plugin's biggest instrumented cost → `_lists_cache` :174).
 
 ## highpoly_rsprops.gd (216) — OFF
@@ -77,12 +83,16 @@ Dead: `_regenerate_now` :394-419 loop is unreachable. Two `print()`s :204/:280.
 `class_name HighpolySdkHide`. Hides `MP_<map>_Assets`/`_Terrain` stand-ins; memory-only memory (never set_meta — would serialize). `set_hidden` :51, `restore_all` :73. `_saved` keyed by instance id :28.
 
 ## highpoly_section.gd (204) / highpoly_tips.gd (145) / highpoly_splash.gd (124) / highpoly_theme.gd (258)
+> The fork removed highpoly_splash.gd and cut highpoly_theme.gd down to editor-neutral helpers (F-01).
+
 Panel chrome unit. Section: collapsible dock section, `setup` :55, `set_open` :165, signal `opened_changed`. Tips: adopted tooltips (`adopt` :59, meta `hp_tip` — also written by section:172, an undeclared contract). Splash: boot sequence (dead `Pal` preload :27). Theme: palette from `theme.json`, `chip()` :111, `bar()` :104, `build_ui_theme()` :170.
 
 ## highpoly_objdebug.gd (~470, added 2026-08-13)
 No class_name (staged-lane rule); preloaded by toggle (`ObjDebugScript`), held as `objdebug`, closed in `_exit_tree`. The Object Debug window for a confirmed pick: `open(gs, root, HighpolyDiagnose.focus_info())` resolves identity via `gs.describe`, re-reads the mesh with every UV channel via `gs.debug_sections(res_name)` (one entry per SECTION, unmerged), spawns a preview MeshInstance3D at the focus transform, zero-scales the original MMI instance, and hides `_MAP_CONTEXT`'s children (visibility remembered; a hidden parent beats `_apply_radius`'s per-cell toggling so no mapcontext change was needed). Per-part knobs: UV channel (incl. tc4, build's choice labelled via the same bake rule), albedo slot (from `BF6Depot.textures_for`), cutout+threshold, tint, roughness, emission. Untouched part = the build's real `material_for` output (`gs._dress_name` set around the call so body/member holds); first touch swaps to a plain StandardMaterial3D so sliders map 1:1. "Copy report" exports only changed knobs + identity to log and clipboard. Close restores everything.
 
 ## highpoly_soldier.gd (162→181) / highpoly_vehicle.gd (202) / highpoly_weapon.gd (117)
+> Removed in the fork (F-05b), with highpoly_loadout.gd and highpoly_loadout_inspector.gd.
+
 The hardware assemblers, called from `highpoly_lib._asset_id` (`soldier://`, `vehicle://`, `weapon://`).
 - Soldier: NATO=Alliance faction is a PATCH over a shared body (`PATCH` :22, `WEARER` :28, `SPAWNERS` :37). **Bug: `_dress` :128 splits surface names on "@" and does `int(bits[1])` — the exact bug vehicle/weapon document as fixed via `gs._mkey`/`gs._mpal`. Soldier was never updated.**
 - Vehicle: `OVERRIDES` :41 / `UNRESOLVED` :55 (kept proxies with reasons); wheels/turrets need the base-skeleton bind pose (reader doesn't exist yet) :30-36.
@@ -93,6 +103,8 @@ The hardware assemblers, called from `highpoly_lib._asset_id` (`soldier://`, `ve
 No class_name; preloaded (toggle:69), dispatched after doors (toggle:5355/5357). `order` :78, `click` :109 (same walk as doors), `cycle` :148 (may return `{"fetch": key}`). `print()` :182 bypasses Log.
 
 ## highpoly_water.gd (306)
+> Removed in the fork (F-07), with highpoly_native_water.gd and both water shaders.
+
 `class_name HighpolyWater`. Water ShaderMaterial: `KIND_PRESETS` :18, 8-wave field from `WaterOceanSimulationEntityData` (`WAVE_LENGTH_RATIO` powers of 1/φ :110). Ours-vs-theirs ledger :92-95. Unresolved: which foam float3 is shallow :258-264.
 
 ## Cross-file observations

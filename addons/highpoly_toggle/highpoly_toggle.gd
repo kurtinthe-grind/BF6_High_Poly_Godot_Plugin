@@ -14,27 +14,13 @@ extends EditorPlugin
 # keeps only the RID: if the last reference dies, the global points at freed
 # memory and the next terrain-blend material to draw takes the editor down.
 var _ground_white: Texture2D
-# The loot spawner Loadout panel in the Inspector.
-const LoadoutInspector := preload("highpoly_loadout_inspector.gd")
-var _loadout_inspector: EditorInspectorPlugin = null
-# The shared BF6 menu (menu bar, and the Extended Workspace radial when enabled).
-const PluginMenu := preload("bf6_plugin_menu.gd")
-var _menu_bindings: Dictionary = {}
 
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
-var dock_root: Control             # panel root: scroller + the boot overlay
-var win: Window                    # the floating tool panel itself
-var tools_btn: Button              # "High-Poly Tools" in the 3D viewport toolbar
-var _win_rect: Rect2i              # remembered across sessions; zero = never opened
-var video: VideoStreamPlayer       # looping backdrop; paused only when its host is hidden
-var tint: ColorRect                # darkens the backdrop behind the controls
-var border: Panel                  # the outline
-var boot: Node                     # the running boot sequence, if one is playing
+var dock_root: Control             # panel root: holds the scroller
 var tips: Control                  # hover descriptions, drawn inside the panel
 var _menu_sections: Dictionary = {}
 var sections: Array = []           # collapsible sections, in dock order
-var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
 var ovr_chk: Button          # per-selection detail override (live, contextual label)
@@ -44,26 +30,8 @@ var _override: Array = []      # nodes currently carrying the override
 # re-read: _mode_changed used to ask for the list again and always got nothing.
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
-# WRITTEN ONCE because it is applied from two places. The chip sets it when the
-# panel is built and# change, and the second copy had drifted into a different voice entirely
-# ("Project the map-tile colour over the SDK terrain + assets") — so the plain
-# wording was replaced by jargon the moment anyone opened a scene, which is to
-# say almost nobody ever saw it.
-
-const LIGHTING_TIP := "Lights your map the way the real one is lit, with the \
-same sun angle, sun colour, sky and haze. Replaces the editor's plain preview \
-light while it is on."
-
-# A GREYED-OUT CONTROL HAS TO SAY WHY, on the control itself. The reason this
-# one is unavailable was only ever written into the status line by the click
-# handler — which cannot run, because the chip is disabled. So the explanation
-# existed and was unreachable at exactly the moment it was needed, and the map
-# simply had a Lighting button that could not be pressed and never said why.
-const LIGHTING_TIP_NONE := "This map has no lighting data yet, so there is \
-nothing to switch on. Everything else in this panel still works."
 
 const BJournal = preload("highpoly_journal.gd")
-const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
 # Only ever used to ASSIGN statics. Reads and calls go through HighpolyLib as
@@ -72,33 +40,20 @@ const MapContextScript = preload("highpoly_mapcontext.gd")
 const LibScript = preload("highpoly_lib.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
-const FlightPath = preload("highpoly_flightpath.gd")
 const GameDir = preload("highpoly_gamedir.gd")
 const Preparation = preload("highpoly_preparation.gd")
 var _preparation: VBoxContainer
-var _preparation_restore_float := false
-var _preparation_viewports: Array = []
 const HighpolyVariants = preload("highpoly_variants.gd")
-const LightingScript = preload("highpoly_lighting.gd")
-const GameSourceScript = preload("highpoly_gamesource.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
 const JobsScript = preload("highpoly_jobs.gd")
 const SdkHide = preload("highpoly_sdkhide.gd")
 
-# Progress-bar lane names. Kept together because the bar is keyed by string:
-# opening a lane under one spelling and closing it under another leaves a bar
-# stuck on screen for the rest of the session.
-const FX_JOB := "Placing the level's effects"
-const LIGHTS_JOB := "Placing the level's lights"
 const ShapeViz = preload("highpoly_shapeviz.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
 const SharedMenu = preload("highpoly_menu.gd")
-const Backdrop = preload("highpoly_backdrop.gd")
-const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
-var previews: Node
 var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
@@ -117,7 +72,6 @@ var col_alpha: HSlider
 var mapctx_on: Button        # Map Context enabled
 var mapctx_objects: Button   # show original map objects (lives under Detail Mode)
 var mapctx_backdrop: Button  # show the distant skyline / out-of-bounds vista
-var mapctx_water: Button     # show the level's rivers / harbour / sea
 var mapctx_roads: Button     # the street network baked onto the ground
 var mapctx_grass: Button     # ground clutter from the level's scatter catalogue
 var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
@@ -141,33 +95,12 @@ const UNFOCUS_PARK := "user://highpoly/unfocused_parked.json"
 const UNFOCUS_DRAW_USEC := 16000        # ~60 fps unfocused, not flat out
 const UNFOCUS_DEFAULT := 100000         # Godot's own, ~10 fps
 var unfocus_btn: Button
-var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
-var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
-var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
-var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
-var mapctx_maplights: Button # sub-toggle: the map's mined light entities
-var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
-var mapctx_fill: HSlider             # ambient held back from sky visibility, 0-60%
-var mapctx_fill_val: Label
 var mapctx_photo_row: HBoxContainer  # "Ground photo" slider row (always shown)
 var mapctx_photo: HSlider            # colour-map strength on the extended ground, 0-100%
 var mapctx_photo_val: Label
 var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
-var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
+var mapctx_variant_row: HBoxContainer  # "Variant" map-layer dropdown (visible with objects)
 var mapctx_variant: OptionButton
-# The selected mode's DATA KEY, resolved once when the selection changes.
-# The per-tick heal below needs it, and resolving it there would re-parse the
-# mined JSON several times a second for a value that only changes on a click.
-var _gm_key := ""
-# How long the gamemode mine is allowed before it is treated as dead. Measured
-# at 3.4 s on MP_Aftermath with the level mounted; 90 s is far enough above that
-# to survive a slow drive and still short enough that nobody waits out a
-# session for a worker that died on its first line.
-const MINE_TIMEOUT_MS := 90000
-# Set when a heal ran and still produced no node - the dropdown is showing a
-# layer name with no mined mode behind it, so retrying every tick would just
-# rebuild nothing forever. Cleared whenever the selection or the map changes.
-var _gm_heal_off := ""
 var mapctx_timer: Timer
 
 # ---------------------------------------------------------------------------
@@ -199,10 +132,9 @@ var _mapctx_gen := 0
 # True while a game-source open is in flight. Every layer toggle re-enters
 # _mapctx_changed, and without this each one starts its own read of the install.
 var _gs_opening := false
-var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a newer version exists
 var banner: Label              # legacy-mode notice ("reorganization pending")
 var jobs: Node                 # HighpolyJobs: the download queue
-var job_row: VBoxContainer     # the one universal bar, in the Check-for-Updates slot
+var job_row: VBoxContainer     # the one universal bar, shown while anything downloads
 # the stage checklist shown while the install is being read
 var read_panel: VBoxContainer
 var read_title: Label
@@ -216,7 +148,6 @@ var log_view: RichTextLabel
 var log_count: Label
                                # download (typed by base, like mapctx/sync — the
                                # global class name isn't registered until a scan)
-var check_btn: Button          # manual "Check for updates" (forces a registry re-check)
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 var _ready_names: Dictionary = {}   # models that landed since the last swap-in pass
 # ---- storage section (dock) ----
@@ -374,42 +305,40 @@ func _build_bf6_gate() -> void:
 		EditorInterface.get_base_control().add_child(fd)
 		fd.popup_centered_ratio(0.6)
 		fd.close_requested.connect(func(): fd.queue_free()))
+	# THE CACHE ROW. Caching is on demand and for the open map only: nothing
+	# starts when the plugin is enabled, there is no cover screen and nothing is
+	# locked behind it (findings §3, C1-C15). The row says whether the open map
+	# is cached and offers "Cache this map".
 	_preparation = Preparation.new()
-	_preparation.foreground_owner = func(): return EditorInterface.get_base_control()
-	_preparation.popup_deferred = func(): return _panel_suppressed()
-	_preparation.previews_missing = _previews_missing_for_cache
-	_preparation.previews_run = _run_previews_for_cache
-	_preparation.previews_cancel = _cancel_previews_for_cache
-	# High Poly stays locked until the up-front cache is complete.
-	_preparation.ready_changed.connect(func(_is_ready: bool): _apply_bf6_gate())
-	_preparation.editing_lock_changed.connect(func(locked: bool):
-		if locked:
-			if _preparation_viewports.is_empty():
-				var viewports: Array = []
-				for index in range(4):
-					var viewport := EditorInterface.get_editor_viewport_3d(index)
-					if viewport != null:
-						viewports.append(viewport)
-				_preparation_viewports = Preparation.Screen.suspend_viewports(viewports)
-			_preparation_restore_float = is_instance_valid(win) and win.visible
-			if _preparation_restore_float:
-				win.hide()
-		else:
-			Preparation.Screen.restore_viewports(_preparation_viewports)
-			if _preparation_restore_float and is_instance_valid(win):
-				_preparation_restore_float = false
-				if _panel_suppressed(): _win_held_for_home = true
-				else: win.show())
 	_preparation.current_level = func():
 		var scene := EditorInterface.get_edited_scene_root()
 		if scene == null:
 			return ""
 		var level := MapContextScript.map_of(scene).to_lower()
-		if level in _preparation._levels:
+		if level != "":
 			return level
-		var references: Array = preload("highpoly_preparation_order.gd").scene_levels(scene.scene_file_path, _preparation._levels)
+		var known: Array = _preparation._levels
+		if known.is_empty():
+			return ""
+		var references: Array = preload("highpoly_preparation_order.gd").scene_levels(scene.scene_file_path, known)
 		return str(references[0]) if references.size() == 1 else ""
+	# Two processes indexing one map at once would race on the same index
+	# files, so a read already running in this editor wins.
+	_preparation.pack_info = func(level: String) -> Dictionary:
+		return HighpolyGameSource.pack_info(level)
+	_preparation.busy_reason = func() -> String:
+		return "The map is being read right now; press Cache this map once it finishes." \
+			if (_gs_opening or _read_worker_busy) else ""
+	_preparation.focus_requested.connect(_focus_dock)
+	_preparation.level_cached.connect(func(level: String):
+		lbl.text = "%s is cached. The next High-Poly build of it reads the index from disk." % level)
 	bf6_row.add_child(_preparation)
+	# The opt-in: off unless the user switched it on for this project.
+	_preparation.auto_chk.set_pressed_no_signal(bool(EditorInterface.get_editor_settings()
+		.get_project_metadata("highpoly", "auto_cache", false)))
+	_preparation.auto_chk.toggled.connect(func(on: bool):
+		EditorInterface.get_editor_settings().set_project_metadata("highpoly", "auto_cache", on)
+		lbl.text = "Auto-cache " + ("on: the open map is cached when High-Poly turns on." if on else "off."))
 
 	# Autodetect covers Steam and EA's usual folders plus every library in
 	# libraryfolders.vdf, so most people never touch this row.
@@ -458,8 +387,9 @@ func _set_game_dir(path: String, remember := true) -> void:
 func _apply_bf6_gate() -> void:
 	if dock == null or not is_instance_valid(dock):
 		return
-	# Locked until the install is verified AND the up-front cache has finished.
-	var open: bool = _bf6_ok and is_instance_valid(_preparation) and bool(_preparation.cache_ready)
+	# Locked only until an install is detected. NOT on the cache (C10): an
+	# uncached map builds cold, reading everything from the install.
+	var open: bool = _bf6_ok
 	for c in dock.get_children():
 		if c == bf6_row or c.has_meta("bf6_gate_exempt") or not (c is CanvasItem):
 			continue
@@ -579,31 +509,18 @@ func _perf_state() -> Dictionary:
 		"map_context": chip.call(mapctx_on),
 		"objects": chip.call(mapctx_objects),
 		"backdrop": chip.call(mapctx_backdrop),
-		"water": chip.call(mapctx_water),
-		"fx": chip.call(mapctx_fx),
-		"lighting": chip.call(mapctx_light),
-		"contact_shading": chip.call(mapctx_gi),
-		"shadows": chip.call(mapctx_shadows),
-		"map_lights": chip.call(mapctx_maplights),
 	}
 
 func _shed_map_context() -> int:
 	var r := EditorInterface.get_edited_scene_root()
 	var shed := 0
-	for c in [mapctx_on, mapctx_objects, mapctx_backdrop, mapctx_water,
-			mapctx_fx, mapctx_light]:
+	for c in [mapctx_on, mapctx_objects, mapctx_backdrop]:
 		if c != null and (c as Button).button_pressed:
 			(c as Button).set_pressed_no_signal(false)
 			shed += 1
 	if mapctx_variant != null: mapctx_variant.select(0)
 	if mapctx_variant_row != null: mapctx_variant_row.visible = false
-	_gm_key = ""
-	_gm_heal_off = ""
-	_lighting_subs_enabled(false)   # the lighting sub-toggles go unavailable
 	if r != null:
-		HighpolyFx.clear(r)
-		HighpolyGamemode.clear(r)
-		LightingScript.clear(r)
 		mapctx.apply(r, false, false, MODE_SDK)
 		# and hand the SDK its own stand-ins back — the layers that were on had
 		# hidden them to take their place
@@ -631,15 +548,6 @@ func _enter_tree() -> void:
 	# Configure before any theme lookup; nested installs must read their own
 	# shipped menu and palette rather than another add-on at the default path.
 	SharedMenu.configure(get_script().resource_path.get_base_dir())
-	# THE LOOT AND SOLDIER SPAWNERS' LOADOUT, in the Inspector
-	# (highpoly_loadout_inspector.gd). The key is the spawner's scene name.
-	_loadout_inspector = LoadoutInspector.new()
-	_loadout_inspector.undo = get_undo_redo()
-	_loadout_inspector.refresh_node = func(node: Node) -> void:
-		if node is Node3D and is_instance_valid(node):
-			HighpolyLib.apply_one(node as Node3D, HighpolyLib.LoadoutScript.type_of(node), _mode(), _textured())
-	add_inspector_plugin(_loadout_inspector)
-	_register_bf6_menu.call_deferred()
 	# The terrain-blend GLOBAL shader parameters, registered before any prop
 	# material can compile against them. Session-only (RenderingServer, not
 	# ProjectSettings), so nothing is written into the user's project; the map
@@ -692,32 +600,16 @@ func _enter_tree() -> void:
 	# everything below it.
 	_build_bf6_gate()
 
-	# plugin self-update: hidden unless the registry advertises a newer version
-	#
-	# EXEMPT FROM THE BF6 GATE, both update rows. The gate exists so nothing
-	# tries to read a game that is not there - but updating the plugin reads
-	# GitHub and the staging lane, not the install. Gated, it locked out the
-	# one user who most needs an update: someone whose install is not being
-	# DETECTED yet, waiting on exactly the autodetect fix an update carries.
-	update_btn = Button.new()
-	update_btn.visible = false
-	update_btn.pressed.connect(_do_plugin_update)
-	var up_row := _centred(update_btn)
-	up_row.set_meta("bf6_gate_exempt", true)
-	dock.add_child(up_row)
-
 	banner = Label.new()
 	banner.visible = false
 	banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	banner.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	dock.add_child(banner)
 
-	# ---- the one download bar, shown in place of "Check for updates" ----
+	# ---- the one download bar ----
 	# One bar, not a stack: only one transfer runs at a time now, so a stack
 	# could only ever show one moving row and several idle ones.
-	jobs = _take_service("jobs")
-	if jobs == null:
-		jobs = JobsScript.new()
+	jobs = JobsScript.new()
 	jobs.name = "HighpolyJobQueue"
 	dock.add_child(jobs)
 	job_row = VBoxContainer.new()
@@ -750,15 +642,7 @@ func _enter_tree() -> void:
 	job_bar.add_child(job_pct)
 	jobs.changed.connect(_refresh_job_bar)
 
-	check_btn = Button.new()
-	check_btn.text = "Check for updates"
-	check_btn.tooltip_text = "Applies a plugin update without restarting the editor: staged updates are copied in first, then any plugin script that changed on disk is reloaded in place. Press it when you are told a fix is ready; it refuses while something is building, so it is always safe to press."
-	check_btn.pressed.connect(_check_updates_now)
-	var ck_row := _centred(check_btn)
-	ck_row.set_meta("bf6_gate_exempt", true)   # see update_btn: updates must
-	dock.add_child(ck_row)                     # work with no install detected
-
-	dock.add_child(job_row)      # takes the button's place while anything downloads
+	dock.add_child(job_row)      # visible only while anything downloads
 
 	# ---- what the read of the install is actually doing ----------------------
 	#
@@ -793,7 +677,7 @@ func _enter_tree() -> void:
 	dock.add_child(read_panel)
 
 	# The master control. It switches the borrowed scenery on and off and sets
-	# the draw distance for the scenery, the effects, the map lights and your
+	# the draw distance for the scenery and your
 	# own placed pieces — so it belongs at the top, not inside one section.
 	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
@@ -828,15 +712,8 @@ func _enter_tree() -> void:
 		# mesh instead of thousands of pieces. Fed the slider VALUE, not _rad -
 		# the top notch sets _rad to 1e9 and half of that would merge nothing.
 		mapctx.set_merge_from_range(v)
-		# lights + FX ride the same slider: lights capped at 300 m (the
-		# clustered-lighting GPU budget), FX clamped to their class ranges
 		var _rr := EditorInterface.get_edited_scene_root()
-		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
-		# the light cull now skips a stationary camera, so a range change has to
-		# say so or dragging the slider while standing still would do nothing
-		LightingScript.invalidate_light_cull()
 		if _rr != null:
-			HighpolyFx.set_range(_rr, _rad)
 			if mapctx_optimize and mapctx_optimize.button_pressed:
 				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
 		# The slider is a VIEW DISTANCE control, nothing more. It used to double
@@ -864,7 +741,7 @@ func _enter_tree() -> void:
 		mode_btn.add_item(Modes.label(id), id)
 	mode_btn.tooltip_text = "Low-Poly (what you export): only what the SDK ships.
 
-Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, water, skyline, lighting and the level's own objects.
+Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, skyline and the level's own objects.
 
 High-Poly: your pieces are swapped for the real game models too, in clay or with their real textures.
 
@@ -883,9 +760,6 @@ All of it is read from your own Battlefield 6 installation."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
 	_gate(ovr_chk, "Previewing a selection in High-Poly")
-
-	# Object library icons are rendered by the up-front cache (highpoly_preparation.gd),
-	# not by a button: see _run_previews_for_cache.
 
 	host = _section("collision", "Collision",
 		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
@@ -955,14 +829,11 @@ All of it is read from your own Battlefield 6 installation."
 	col_alpha.editable = false
 
 	host = _section("map_context", "Map Context",
-		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.")
+		"Build inside the real level instead of an empty grey box: the ground, the skyline and the buildings the real place has. All of it is preview only: none of it is saved into your map or exported.")
 
 	var mc_chips := _chip_row(host)
-	# sub-toggles of "Lighting", indented under the main row and only
-	# visible while it is on
-	var mc_sub := _chip_row(host, 14)
 	mapctx_on = Theme_.chip("Extended Terrain")
-	mapctx_on.tooltip_text = "Adds the real ground and water that surround the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
+	mapctx_on.tooltip_text = "Adds the real ground that surrounds the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
 		if _locked(mapctx_on): return
 		var r0 := EditorInterface.get_edited_scene_root()
@@ -973,7 +844,7 @@ All of it is read from your own Battlefield 6 installation."
 		# independent now; Original map objects has its own switch.
 		# the SDK's own terrain slab sits exactly where ours goes
 		_sdk_terrain_hidden(v)
-		# fast show/hide of the built terrain/backdrop/water layers — the full
+		# fast show/hide of the built terrain/backdrop layers — the full
 		# rebuild also regenerated every map object. Falls back to the full
 		# apply when nothing is built yet or the detail mode changed.
 		if mapctx.set_context_shown(r0, v, _mapctx_tex_mode()):
@@ -982,27 +853,6 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_on)
-
-	# PROP LIGHTING: the fixtures a placed prop brought in from the game, and the
-	# glow on its own bulb. Both come from the level - the lights are the ones the
-	# prefab carries and the glow is its emissive sheet - and this only decides
-	# whether they are switched on. Off, a lamp is a lamp that is not turned on,
-	# which is the honest default while laying out geometry.
-	prop_light_on = Theme_.chip("Prop Lighting")
-	prop_light_on.tooltip_text = "Switches on the lights a placed prop carries in the game, and makes its bulbs, screens and lit signs glow. Both come from the level's own data. Preview only: nothing is saved into your map or exported."
-	prop_light_on.button_pressed = false
-	prop_light_on.toggled.connect(func(v: bool):
-		if _locked(prop_light_on): return
-		_set_prop_lighting(v))
-	# UNDER DETAIL MODE, not with the map-context layers.
-	#
-	# It reads as a map-context switch because it was next to them, but it is not
-	# one: every other chip in that row decides whether a LAYER OF THE MAP exists
-	# - the ground, the skyline, the sea, the level's own props. This one decides
-	# how the pieces YOU placed are lit, which is the same question Detail Mode
-	# answers for how they are modelled and textured. It works with no map
-	# context at all.
-	_detail_chips.add_child(prop_light_on)
 
 	# The distant skyline is its own layer: it is what you see PAST the edge of
 	# the play area, and wanting the horizon is a different question from wanting
@@ -1023,25 +873,6 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_backdrop)
-
-	mapctx_water = Theme_.chip("Water")
-	mapctx_water.tooltip_text = "The rivers, harbours and sea the real level has, at the real height, so you can see what your build sits above. Rivers and lakes that live inside the terrain data are built as real surfaces with their own water level. Speed of the ripples follows the water setting in Configure Shaders, where zero holds it still. Some maps ship no water body at all, and a few (Battery, Contaminated) build their sea as ordinary scenery instead: the Backdrops layer draws those."
-	mapctx_water.toggled.connect(func(v: bool):
-		if _locked(mapctx_water): return
-		var r0 := EditorInterface.get_edited_scene_root()
-		# flip it if it exists; if not, build JUST this layer. Only a scene with
-		# no overlay at all needs the full apply.
-		if v and mapctx.ensure_layer(r0, "water", _mapctx_tex_mode()):
-			mapctx.set_water_shown(r0, true)
-			lbl.text = "Water shown"
-			_save_mapctx_state()
-			return
-		if mapctx.set_water_shown(r0, v):
-			lbl.text = "Water " + ("shown" if v else "hidden")
-			_save_mapctx_state()
-			return
-		_mapctx_changed())
-	mc_chips.add_child(mapctx_water)
 
 	# ROADS, SEPARATED FROM THE GROUND THEY SIT ON.
 	#
@@ -1121,10 +952,9 @@ All of it is read from your own Battlefield 6 installation."
 	# grouping it with them is how people look for it.
 	mc_chips.add_child(mapctx_objects)
 
-	# "Map variant": draw one gamemode's real gameplay layout (capture rings,
-	# objectives, spawn clusters, zones + that mode's own gated props) — data
-	# mined from the level's per-mode gameplay layers. Shown while "Original
-	# map objects" is on and the map has gamemode data.
+	# "Map variant": show one of the map's own object layers (see
+	# _select_variant). Shown while "Original map objects" is on and the map
+	# has layers to choose from.
 	mapctx_variant_row = HBoxContainer.new()
 	mapctx_variant_row.visible = false
 	var mv_lbl := Label.new(); mv_lbl.text = "  Variant"
@@ -1132,20 +962,10 @@ All of it is read from your own Battlefield 6 installation."
 	mapctx_variant = OptionButton.new()
 	mapctx_variant.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mapctx_variant.add_item("Off")
-	mapctx_variant.tooltip_text = "Rebuilds one game mode out of real Portal objects - capture points, spawns, combat areas and their volumes - under a node named for the mode. Switching modes hides the last one rather than deleting it, so anything you edited is still there when you switch back."
+	mapctx_variant.tooltip_text = "Shows one of the map's own object layers, such as the carriers on Tsuru Reef or a mode's props. Preview only: it adds nothing to your scene."
 	mapctx_variant.item_selected.connect(func(_i):
 		if _locked(mapctx_variant): return
-		var _r := EditorInterface.get_edited_scene_root()
-		var _map: String = mapctx.map_of(_r)
-		# the dropdown shows the name people use; everything below runs on the
-		# data key, because the layer gating matches its string literally
-		var _mode := HighpolyGamemode.key_for(_map, _r,
-			mapctx_variant.get_item_text(mapctx_variant.selected))
-		_gm_key = _mode
-		_gm_heal_off = ""
-		lbl.text = HighpolyGamemode.apply(_r, _map, _mode, mapctx) \
-				+ " | " + mapctx.set_variant_layers(_mode)
-		_save_mapctx_state())
+		_select_variant(mapctx_variant.get_item_text(mapctx_variant.selected)))
 	mapctx_variant_row.add_child(mapctx_variant)
 	host.add_child(mapctx_variant_row)
 
@@ -1162,92 +982,6 @@ All of it is read from your own Battlefield 6 installation."
 	# theirs. We stopped projecting a second one; while Extended Terrain is on
 	# we hide theirs instead, because our terrain already carries the same
 	# photo inside its shader. See highpoly_mapcontext._set_sdk_decal_shown.
-
-	mapctx_fx = Theme_.chip("FX")
-	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. That includes the big distant smoke and haze cards near the skyline, which are effects rather than scenery. They are off by default, because they are hundreds of metres across and sit in front of the surroundings."
-	mapctx_fx.toggled.connect(func(v: bool):
-		if _locked(mapctx_fx): return
-		var _r := EditorInterface.get_edited_scene_root()
-		# Same as the map lights: the build skips mining FX emitters when this
-		# layer is off, so switching it on is where they get mined - on a
-		# worker, or the first press freezes the editor for the whole mine
-		# with nothing on screen saying why (task #75).
-		if v and mapctx != null:
-			mapctx.want_fx = true
-			await _ensure_mapdata_async(mapctx.game_source, {"fx": true})
-			mapctx.ensure_section("fx")
-		# the level's flipbook cards are drawn as props, so they follow this
-		# switch too rather than arriving unbidden with the map objects
-		mapctx.set_fx_cards_shown(_r, v)
-		lbl.text = await HighpolyFx.apply(_r, mapctx.map_of(_r), v, _lane(FX_JOB),
-			mapctx.game_source)
-		_save_mapctx_state())
-	mc_chips.add_child(mapctx_fx)
-
-	mapctx_light = Theme_.chip("Lighting")
-	mapctx_light.tooltip_text = LIGHTING_TIP
-	mapctx_light.toggled.connect(func(v: bool):
-		if _locked(mapctx_light): return
-		_lighting_subs_enabled(v)
-		_lighting_changed()
-		_save_mapctx_state())
-	mc_chips.add_child(mapctx_light)
-
-	# sub-toggles: only shown while Game lighting is on; both act LIVE on the
-	# injected rig/overlay (no rebuild) and are remembered per map
-	# Was "Soft shading", and it switched on Godot's real-time global
-	# illumination as well as contact shading. The GI half made the view WORSE
-	# than leaving the chip off — the game bakes its GI offline and our scene is
-	# a runtime overlay spread over kilometres, which is the case that technique
-	# handles worst. It now toggles only the contact darkening the game itself
-	# has, so the label says that instead of promising bounced light.
-	mapctx_gi = Theme_.chip("Contact shading")
-	mapctx_gi.button_pressed = true
-	mapctx_gi.disabled = true
-	mapctx_gi.tooltip_text = "Darkens the creases where surfaces meet: under vehicles, inside doorways, along kerbs. This is the same contact shading the game uses, at the radius the map itself specifies. Costs some frame rate; switch it off if the view gets choppy."
-	mapctx_gi.toggled.connect(func(v: bool):
-		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_gi)
-
-	mapctx_shadows = Theme_.chip("Shadows")
-	mapctx_shadows.button_pressed = true
-	mapctx_shadows.disabled = true
-	mapctx_shadows.tooltip_text = "Shadows cast by the sun. Costs frame rate. Switch it off if the view gets choppy."
-	mapctx_shadows.toggled.connect(func(v: bool):
-		lbl.text = LightingScript.set_shadows(EditorInterface.get_edited_scene_root(), v)
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_shadows)
-
-	# Interior light: how much ambient stops depending on seeing sky. Sits with
-	# Shadows because that is the pairing people reach for — the complaint it
-	# answers is "the shadowed side is pure black", and shadows are what put it
-	# there. Shown only alongside the shadow controls, hidden with them.
-	mapctx_fill_row = HBoxContainer.new()
-	var fill_lbl := Label.new(); fill_lbl.text = "Interior light"
-	mapctx_fill_row.add_child(fill_lbl)
-	mapctx_fill = HSlider.new()
-	mapctx_fill.editable = false        # Lighting starts off; greyed, not hidden
-	mapctx_fill.min_value = 0; mapctx_fill.max_value = 60
-	mapctx_fill.step = 1; mapctx_fill.value = int(round(LightingScript.interior_fill * 100.0))
-	# An HSlider's minimum width is ZERO, and this row lives in an
-	# HFlowContainer, which sizes children to their minimum. SIZE_EXPAND_FILL
-	# means nothing there, so the bar collapsed to no width at all: the label and
-	# the "22%" rendered, the draggable part did not exist. Give it a real width.
-	mapctx_fill.custom_minimum_size = Vector2(150, 0)
-	mapctx_fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_fill.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	mapctx_fill.tooltip_text = "Lifts the darkest areas, such as inside buildings, under bridges and the shadowed side of a wall, so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. Preview only: it changes nothing about your map."
-	mapctx_fill_row.add_child(mapctx_fill)
-	mapctx_fill_val = Label.new()
-	mapctx_fill_val.text = "%d%%" % int(mapctx_fill.value)
-	mapctx_fill_row.add_child(mapctx_fill_val)
-	mapctx_fill.value_changed.connect(func(v: float):
-		mapctx_fill_val.text = "%d%%" % int(v)
-		lbl.text = LightingScript.set_interior_fill(
-			EditorInterface.get_edited_scene_root(), v / 100.0)
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_fill_row)
 
 	# Ground photo: how strongly the game's own terrain colour raster steers
 	# the extended ground. It is real game data - the engine modulates every
@@ -1278,37 +1012,7 @@ All of it is read from your own Battlefield 6 installation."
 		if mapctx != null:
 			lbl.text = mapctx.set_colormap_strength(v / 100.0)
 		_save_mapctx_state())
-	mc_sub.add_child(mapctx_photo_row)
-
-	# (A pair of sun-position sliders lived here while the azimuth convention was
-	# being worked out against the running game. They did their job — SunRotationX
-	# turned out to be a compass bearing, see sun_dir() — and came straight back
-	# out. The sun is read from each level's own data with nothing to adjust.)
-
-	mapctx_maplights = Theme_.chip("Map lights")
-	mapctx_maplights.button_pressed = false
-	mapctx_maplights.disabled = true
-	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has, several thousand of them on some maps. Only the ones near your camera light up. Costs frame rate."
-	mapctx_maplights.toggled.connect(func(v: bool):
-		var _r := EditorInterface.get_edited_scene_root()
-		# The build only mines the light entities when this layer is on, so
-		# switching it on is the moment to make sure they exist. set_map_lights
-		# reads the file map_data writes and never asks map_data for it, so
-		# without this the layer would come on to nothing.
-		# ON A WORKER FIRST. ensure_section is a synchronous map_data ask, and
-		# a first mine of a section is main-thread freeze territory (task #75:
-		# "64 s of a 74 s terrain-only apply" in a user's log). After the worker
-		# has mined it, ensure_section is a dictionary lookup.
-		if v and mapctx != null:
-			mapctx.want_lights = true
-			await _ensure_mapdata_async(mapctx.game_source, {"lights": true})
-			mapctx.ensure_section("lights")
-		lbl.text = await LightingScript.set_map_lights(_r,
-				v and mapctx_light.button_pressed, mapctx.map_of(_r),
-				_lane(LIGHTS_JOB))
-		_save_mapctx_state())
-	mc_sub.add_child(mapctx_maplights)
-
+	mc_chips.add_child(mapctx_photo_row)
 
 	# Optimize placed objects: distance-cull the props the USER places (their custom
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
@@ -1336,11 +1040,10 @@ All of it is read from your own Battlefield 6 installation."
 	# plugin download", and that is worth being able to read at a glance.
 	#
 	# Deliberately NOT gated: the Range slider (a view distance, it loads
-	# nothing), the lighting sub-toggles (they only exist while Lighting is on,
-	# which is gated), and the collision overlays (drawn from the scene itself).
+	# nothing), the Ground photo slider (a shader strength, it loads nothing)
+	# and the collision overlays (drawn from the scene itself).
 	_gate(mapctx_on, "The extended terrain")
 	_gate(mapctx_backdrop, "The distant skyline")
-	_gate(mapctx_water, "The water")
 	# Roads and Grass ride the extended terrain, so they are gated with it.
 	# Roads had the _locked() snap-back in its handler from day one but was
 	# never REGISTERED here, so on the Low-Poly rung it looked pressable and
@@ -1348,13 +1051,11 @@ All of it is read from your own Battlefield 6 installation."
 	_gate(mapctx_roads, "The roads and paths")
 	_gate(mapctx_grass, "The ground clutter")
 	_gate(mapctx_objects, "The level's own objects")
-	_gate(mapctx_fx, "The level's effects")
-	_gate(mapctx_light, "The game lighting")
 	_gate(mapctx_variant, "The game mode layouts")
 
 	var shader_btn := Button.new()
 	shader_btn.text = "Configure Shaders…"
-	shader_btn.tooltip_text = "Settings for the moving parts: rippling water, drifting smoke and swaying grass."
+	shader_btn.tooltip_text = "Settings for the moving parts: swaying grass."
 	shader_btn.pressed.connect(_open_shader_dialog)
 	host.add_child(_centred(shader_btn))
 
@@ -1397,6 +1098,43 @@ All of it is read from your own Battlefield 6 installation."
 		lbl.text = "Opened %s" % dir)
 	host.add_child(_centred(files_btn))
 
+	var sweep_btn := Button.new()
+	sweep_btn.text = "Remove outdated caches"
+	sweep_btn.tooltip_text = "Deletes cache files and folders that a newer copy has replaced: superseded index files, older geometry and texture packs of each map, temp logs left by sessions that ended badly and job files from interrupted caching. The newest copy of every cache is kept; anything removed is rebuilt if it is ever needed again."
+	sweep_btn.pressed.connect(func():
+		var now := int(Time.get_unix_time_from_system())
+		var names := HighpolyCacheSweep.outdated(HighpolyCacheSweep.scan(), now)
+		var geom_dirs := HighpolyCacheSweep.outdated_dirs(
+			HighpolyCacheSweep.scan_dirs(HighpolyCacheSweep.GEOM_DIR), HighpolyCacheSweep.GEOM_DIR)
+		var tex_dirs := HighpolyCacheSweep.outdated_dirs(
+			HighpolyCacheSweep.scan_dirs(HighpolyCacheSweep.TEX_DIR), HighpolyCacheSweep.TEX_DIR)
+		var jobs_old := HighpolyCacheSweep.stale_jobs(
+			HighpolyCacheSweep.scan(HighpolyCacheSweep.JOBS_DIR + "/")
+				if DirAccess.dir_exists_absolute(HighpolyCacheSweep.JOBS_DIR) else [], now)
+		var listing := PackedStringArray(names)
+		for d in geom_dirs: listing.append("bf6_geom/%s/" % d)
+		for d in tex_dirs: listing.append("bf6_tex/%s/" % d)
+		for j in jobs_old: listing.append("preparation_jobs/%s" % j)
+		if listing.is_empty():
+			lbl.text = "No outdated caches."
+			return
+		var dlg := ConfirmationDialog.new()
+		dlg.dialog_text = "Delete %d outdated cache item(s)?\n\n%s" % [listing.size(),
+			"\n".join(Array(listing).slice(0, 12)) + ("\n…" if listing.size() > 12 else "")]
+		dlg.confirmed.connect(func():
+			var freed := HighpolyCacheSweep.remove(names)
+			freed += HighpolyCacheSweep.remove_dirs(geom_dirs, HighpolyCacheSweep.GEOM_DIR)
+			freed += HighpolyCacheSweep.remove_dirs(tex_dirs, HighpolyCacheSweep.TEX_DIR)
+			freed += HighpolyCacheSweep.remove(jobs_old, HighpolyCacheSweep.JOBS_DIR + "/")
+			lbl.text = "Removed %d item(s), %s freed." % [listing.size(), _human_size(freed)]
+			Log.info(lbl.text)
+			_refresh_storage()
+			dlg.queue_free())
+		dlg.canceled.connect(func(): dlg.queue_free())
+		EditorInterface.get_base_control().add_child(dlg)
+		dlg.popup_centered())
+	host.add_child(_centred(sweep_btn))
+
 	# Settings that used to live in this row and no longer need to be decisions:
 	#
 	#   "Faster loading" only ever chose whether to KEEP the work, and switching
@@ -1418,33 +1156,12 @@ All of it is read from your own Battlefield 6 installation."
 	var _es := EditorInterface.get_editor_settings()
 	var _sp: Variant = _es.get_project_metadata("highpoly_mapctx", "_shaders", {})
 	if _sp is Dictionary:
+		# Only the keys the dialog still has. A save from an older build can
+		# carry ones that are gone (the smoke-card flipbook speed), and copying
+		# those back would only write them out again on the next save.
 		for k in (_sp as Dictionary):
-			HighpolyMapContext.shader_prefs[k] = _sp[k]
-
-	var storage_chips := _chip_row(host)
-
-	# --- Record flight path (developer tool) --------------------------------
-	# Records the editor camera at 20 Hz so a benchmark can fly the SAME route
-	# afterwards. Every rendering measurement before this used a static camera,
-	# which cannot answer "did that change make flying smoother" — the only
-	# question that actually matters. Recording the route you fly captures the
-	# places that are actually slow, rather than a synthetic orbit.
-	var flight_chk := Theme_.chip("Record flight path")
-	flight_chk.tooltip_text = "Developer tool. Records where you fly so the same route can be replayed and timed. Switch it on, fly the part of the map that feels slow, switch it off — it saves a file and tells you where it went."
-	flight_chk.toggled.connect(func(v: bool):
-		if v:
-			var mapn: String = str(mapctx._map) if mapctx != null else ""
-			if FlightPath.start(self, mapn if mapn != "" else "unknown"):
-				lbl.text = "Recording. Fly the parts that feel slow, then switch this off."
-			else:
-				flight_chk.set_pressed_no_signal(false)
-				lbl.text = "Could not start recording: no 3D viewport camera found."
-		else:
-			var n: int = FlightPath.sample_count()
-			var p: String = FlightPath.stop()
-			lbl.text = ("Flight path saved: %d samples at %s" % [n, p]) if p != "" \
-					else "Nothing recorded — the camera never moved.")
-	storage_chips.add_child(flight_chk)
+			if HighpolyMapContext.shader_prefs.has(k):
+				HighpolyMapContext.shader_prefs[k] = _sp[k]
 
 	# The game folder moved to the TOP of the panel. It is the precondition
 	# for everything the plugin does, not a storage setting, and two places to
@@ -1882,7 +1599,6 @@ All of it is read from your own Battlefield 6 installation."
 		"collision_color": {"root": cc_row, "container": cc_row},
 		"collision_alpha": {"root": ca_row, "container": ca_row},
 		"map_layers": {"root": mc_chips, "container": mc_chips},
-		"lighting_options": {"root": mc_sub.get_parent(), "container": mc_sub},
 		"map_variant": {"root": mapctx_variant_row, "container": mapctx_variant_row},
 		"map_actions": {"root": shader_btn, "container": shader_btn},
 		"storage_native": {"root": _menu_sections.storage.content, "container": _menu_sections.storage.content},
@@ -1893,7 +1609,6 @@ All of it is read from your own Battlefield 6 installation."
 		"no_cull": SharedMenu.binding(mapctx_nocull),
 		"detail_mode": SharedMenu.binding(mode_btn),
 		"preview_selected": SharedMenu.binding(ovr_chk),
-		"prop_lighting": SharedMenu.binding(prop_light_on),
 		"collisions": SharedMenu.binding(col_chk),
 		"isolate_selected": SharedMenu.binding(iso_chk),
 		"shape_outlines": SharedMenu.binding(shape_chk),
@@ -1901,20 +1616,12 @@ All of it is read from your own Battlefield 6 installation."
 		"collision_alpha": SharedMenu.binding(col_alpha, ca_row, ca_lbl),
 		"terrain": SharedMenu.binding(mapctx_on),
 		"backdrops": SharedMenu.binding(mapctx_backdrop),
-		"water": SharedMenu.binding(mapctx_water),
 		"grass": SharedMenu.binding(mapctx_grass),
 		"objects": SharedMenu.binding(mapctx_objects),
-		"fx": SharedMenu.binding(mapctx_fx),
-		"lighting": SharedMenu.binding(mapctx_light),
-		"contact_shading": SharedMenu.binding(mapctx_gi),
-		"shadows": SharedMenu.binding(mapctx_shadows),
-		"interior_light": SharedMenu.binding(mapctx_fill, mapctx_fill_row, fill_lbl),
 		"ground_photo": SharedMenu.binding(mapctx_photo, mapctx_photo_row, ph_lbl),
-		"map_lights": SharedMenu.binding(mapctx_maplights),
 		"variant": SharedMenu.binding(mapctx_variant, mapctx_variant_row, mv_lbl),
 		"configure_shaders": SharedMenu.binding(shader_btn),
 	}
-	_menu_bindings = menu_bindings
 	var menu_gaps := SharedMenu.apply(dock, _menu_sections, menu_groups, menu_bindings)
 	if not menu_gaps.is_empty():
 		push_warning("High-poly menu adapter gaps: " + ", ".join(menu_gaps))
@@ -1941,10 +1648,14 @@ All of it is read from your own Battlefield 6 installation."
 	# everything, the status line included. And now that every control exists,
 	# re-apply it — it was built first, when there was nothing yet to grey out.
 	dock.move_child(bf6_row, 0)
+	# Readable states on every button (chips, actions, dropdowns): see
+	# HighpolyTheme.style_toggle. Run again from _adopt_tips for controls that
+	# are only created once the panel enters the tree.
+	Theme_.style_all(dock)
 	_apply_bf6_gate()
 
 	var ver_lbl := Label.new()
-	ver_lbl.text = "v%s  ·  TabbedScamper" % HighpolyUpdater.plugin_version()
+	ver_lbl.text = "v%s  ·  TabbedScamper" % _plugin_version()
 	ver_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	ver_lbl.tooltip_text = "Built by TabbedScamper. Frostbite format research by TabbedScamper."
 	ver_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
@@ -1959,9 +1670,7 @@ All of it is read from your own Battlefield 6 installation."
 	dock_scroll = ScrollContainer.new()
 	dock_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	dock_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# Inset the controls off the panel edge. Only the scroller is inset — the
-	# video, the tint and the outline stay full-bleed, so the border frames the
-	# backdrop rather than the buttons.
+	# Inset the controls off the panel edge.
 	dock_scroll.offset_left = SharedMenu.number("padding_x", PANEL_PAD)
 	dock_scroll.offset_right = -SharedMenu.number("padding_x", PANEL_PAD)
 	dock_scroll.offset_top = SharedMenu.number("padding_y", PANEL_PAD_V)
@@ -1969,29 +1678,29 @@ All of it is read from your own Battlefield 6 installation."
 	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_scroll.add_child(dock)
-	# The panel root is a plain Control holding the scroller, so the boot
-	# animation can be a SIBLING covering the whole panel. Inside the scroller it
-	# would be sized and clipped by the panel's content instead of covering it.
+	# The panel root is a plain Control holding the scroller, so the hover
+	# descriptions can be a SIBLING covering the whole panel. Inside the scroller
+	# they would be sized and clipped by the panel's content instead.
 	dock_root = Control.new()
 	dock_root.name = "High-Poly"
 	dock_root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# white text on translucent white masks, over the darkened loop; set on the
-	# panel root only, so anything undefined still falls through to the editor
-	dock_root.theme = Theme_.build_ui_theme()
+	# The editor's own panel background, so the dock tab looks like any
+	# other editor panel (the fork dropped the video backdrop, F-01).
+	var bg := Panel.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dock_root.add_child(bg)
 	dock_root.add_child(dock_scroll)
-	_build_backdrop()
-	_build_tool_window()
-	_join_home_chrome()
-	# the boot sequence is started from the open path, not from visibility_changed:
-	# that signal also fires on close, and every route to opening the panel goes
-	# through the toolbar button's toggle anyway
-	HighpolyUpdater.sweep_removed()   # clear out what an older version left behind
-	# Undo what a KILLED bench run left in the user's editor settings. The
-	# flight zeroes both idle sleeps so it measures a cost rather than a cap,
-	# and perfrun force-kills the editor on hang, crash or timeout - after
-	# which the editor renders at full rate forever, including while it sits
-	# behind a running game competing for the same GPU. Nothing said so.
-	HighpolyFlightRun.restore_pending()
+	tips = TipsScript.new()
+	dock_root.add_child(tips)
+	_add_dock()
+	# Undo what a KILLED bench run left in the user's editor settings. The bench
+	# harness is gone from the fork, but an older install that ran it may have
+	# left a park file with both idle sleeps at 0 - after which the editor
+	# renders at full rate forever, including while it sits behind a running
+	# game competing for the same GPU. Repaired once, then never again.
+	HighpolySleepPark.restore_pending()
+	_sweep_icon_cache()
 	# Same contract for the "draw when unfocused" chip: if a session died with
 	# it on, put the throttle back rather than leaving the editor rendering
 	# flat out in the background forever.
@@ -2013,26 +1722,16 @@ All of it is read from your own Battlefield 6 installation."
 		_log_line(int(r["lvl"]), str(r["m"]))
 	Log.info("Panel opened")
 	_adopt_tips.call_deferred()
-	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
-	_check_plugin_update.call_deferred()
-	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
+	# C14: the usage walk covers GBs of user:// and is only worth doing when
+	# someone is looking at it - so only with the Storage section open, and
+	# again whenever it is opened.
+	_refresh_storage_if_open.call_deferred()
 
-	# Adopted across a soft reopen when there is one to adopt, so the open game
-	# source, the built cell index and the rendered icons all survive a change to
-	# this panel. See _keep_service.
-	profiler = _take_service("profiler")
-	if profiler == null:
-		profiler = ProfilerScript.new()
+	profiler = ProfilerScript.new()
 	profiler.name = "HighpolyProfiler"
 	dock.add_child(profiler)
-	previews = _take_service("previews")
-	if previews == null:
-		previews = PreviewsScript.new()
-	dock.add_child(previews)
-	mapctx = _take_service("mapctx")
-	if mapctx == null:
-		mapctx = MapContextScript.new()
+	mapctx = MapContextScript.new()
 	dock.add_child(mapctx)
 	# the background props builder reports through the dock: live text in the
 	# status label + a real progress bar (meshes built / total)
@@ -2107,10 +1806,9 @@ All of it is read from your own Battlefield 6 installation."
 		# sidecar-cached meshes load with the shader params they were SAVED
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
+		var _t_bf := Time.get_ticks_msec()
 		if _sr != null: mapctx.apply_shader_prefs(_sr)
-		# The icons are rendered from the same prop meshes the build just wrote,
-		# so this is the moment they can stop being the SDK blockout.
-		if previews: previews.rescan_context()
+		var _ms_prefs := Time.get_ticks_msec() - _t_bf
 		# AND THE VARIANT ROW, which could not have been filled before now.
 		#
 		# It lists the layers the map's own placements carry, and it was only
@@ -2118,8 +1816,15 @@ All of it is read from your own Battlefield 6 installation."
 		# when the map data is still empty. So it found no layers, hid itself,
 		# and nothing ever asked again: the dropdown never appeared even once
 		# the props were on screen and their layers were known.
+		_t_bf = Time.get_ticks_msec()
 		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
-		_swap_placed_after_build())
+		var _ms_var := Time.get_ticks_msec() - _t_bf
+		_t_bf = Time.get_ticks_msec()
+		_swap_placed_after_build()
+		# OPT-12: the post-build main-thread work, measured. The swap pass is
+		# async, so this is only its synchronous start.
+		Log.info("after build: shader prefs %d ms, variant row %d ms, swap start %d ms"
+			% [_ms_prefs, _ms_var, Time.get_ticks_msec() - _t_bf]))
 	# the map build gets its own bar
 	mapctx.job_queue = jobs        # map-context downloads take their turn
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
@@ -2168,9 +1873,6 @@ All of it is read from your own Battlefield 6 installation."
 		HighpolyProfile.begin("panel: scene change check")
 		_check_scene_change()
 		HighpolyProfile.end("panel: scene change check")
-		HighpolyProfile.begin("panel: lighting guard")
-		_lighting_guard()
-		HighpolyProfile.end("panel: lighting guard")
 		if mapctx:
 			HighpolyProfile.begin("prop cell culling")
 			var _t_ctx := Time.get_ticks_msec()
@@ -2178,57 +1880,9 @@ All of it is read from your own Battlefield 6 installation."
 			HighpolyProfiler.span("panel tick: prop cell culling",
 				Time.get_ticks_msec() - _t_ctx)
 			HighpolyProfile.end("prop cell culling")
-		# THE MODE REBUILDS ITSELF IF YOU DELETE IT. Selecting a mode leaves a
-		# node in the scene; deleting that node is a normal thing to do and
-		# should not leave the dropdown claiming a mode is shown. So: if a mode
-		# is selected and no node in the tree remembers it, build it again.
-		#
-		# The test is the node's OWN marker, not a fixed name. It used to look
-		# for a node called "_GAMEMODE", which no longer exists at all under the
-		# per-mode nodes this builds - so that test would have been true on
-		# every tick and re-applied the mode several times a second.
-		if mapctx_variant != null and mapctx_variant.selected > 0 \
-				and mapctx_variant_row != null and mapctx_variant_row.visible:
-			HighpolyProfile.begin("gamemode marker heal")
-			var _gr := EditorInterface.get_edited_scene_root()
-			if _gr != null and _gm_key != "" and _gm_heal_off != _gm_key \
-					and not HighpolyGamemode.built(_gr).has(_gm_key):
-				var _gmap: String = mapctx.map_of(_gr)
-				lbl.text = HighpolyGamemode.apply(_gr, _gmap, _gm_key, mapctx)
-				mapctx.set_variant_layers(_gm_key)
-				# Still nothing? Then the dropdown is showing one of the map's
-				# own layer names, which gates props but has no mined objects to
-				# build. Stop, or this retries forever at tick rate.
-				if not HighpolyGamemode.built(_gr).has(_gm_key):
-					_gm_heal_off = _gm_key
-			HighpolyProfile.end("gamemode marker heal")
-		# map-lights culling: only lights near the editor camera render
 		var _vp3 := EditorInterface.get_editor_viewport_3d(0)
 		var _cam3 := _vp3.get_camera_3d() if _vp3 else null
 		if _cam3:
-			var _r3 := EditorInterface.get_edited_scene_root()
-			HighpolyProfile.begin("map light culling")
-			var _t_lt := Time.get_ticks_msec()
-			LightingScript.tick_lights(_r3, _cam3.global_position)
-			HighpolyProfiler.span("panel tick: map-light culling",
-				Time.get_ticks_msec() - _t_lt)
-			HighpolyProfile.end("map light culling")
-			# A placed fixture's lights hang off a scene-level holder so they do
-			# not inflate the prop's selection box, so something has to carry
-			# them when the builder moves the prop. A few matrix multiplies per
-			# tracked fixture, capped at 8 per prop, and dead rows drop out.
-			HighpolyProfile.begin("prop light follow")
-			LightingScript.refresh_prop_lights()
-			HighpolyProfile.end("prop light follow")
-			# Local lighting zones follow the camera the way the game follows the
-			# player: entering an interior blends its exposure in, leaving blends
-			# it out. Costs an AABB test per zone (59 across the whole fleet, and
-			# most maps have none), so it is not worth gating.
-			if mapctx_light != null and mapctx_light.button_pressed:
-				HighpolyProfile.begin("lighting zone blend")
-				LightingScript.tick_zones(_r3, _cam3.global_position,
-						LightingScript.base_ev())
-				HighpolyProfile.end("lighting zone blend")
 			HighpolyProfile.begin("collision outline tidy")
 			ShapeViz.tick()      # tidy up any outline the editor rebuilt
 			HighpolyProfile.end("collision outline tidy")
@@ -2294,59 +1948,21 @@ All of it is read from your own Battlefield 6 installation."
 	# every session starts safe: the rung that downloads nothing, until a mode is
 	# chosen. _restore_mapctx_state moves off it if the open map was left higher.
 	mode_btn.select(mode_btn.get_item_index(MODE_SDK))
-	previews.tier = HighpolyLib.Tier.LOW
 	_refresh_gates()
 
 	# auto-overlay for pieces placed while a detail mode is active
-	# ARM THE LIVE RELOAD with the code this editor just parsed. Doing it here
-	# rather than on the first button press matters: an edit made between
-	# startup and that press would otherwise be adopted as "already loaded"
-	# and never applied.
-	HighpolyReload.arm()
-	# The cold swap's hand-off: the OLD panel triggered it and is gone; this
-	# fresh instance is the proof it worked, and the report says what moved.
-	if HighpolyReload.swap_report != "":
-		Log.info(HighpolyReload.swap_report)
-		HighpolyReload.swap_report = ""
-	# AND WHAT IT MOVED, which decides whether the scenery is stale. The
-	# overlay survives a cold swap on purpose (tearing it down cost a rebuild
-	# per update), but its materials and meshes were built by the code that
-	# was just replaced. A user proved the gap: a material fix applied through
-	# Check for updates, the standing wheels kept the old shredded look, and
-	# the button read as doing nothing. Classify the swapped names; anything
-	# past "code" marks the overlay stale, and the state restore below
-	# rebuilds it fresh instead of re-syncing chips to stale scenery.
-	var _swn: Array = HighpolyReload.take_swap_names()
-	if not _swn.is_empty():
-		_swap_impact = HighpolyReload.impact(_swn)
-		if _swap_impact != "code" and _swap_impact != "none":
-			Log.info(("The update changed %s code, so the scenery on screen was "
-				+ "built by the OLD code - the map state restore will rebuild "
-				+ "it so the change actually shows.") % _swap_impact)
 	get_tree().node_added.connect(_on_node_added)
+	# The tab switch itself, not the next half-second tick: until the outgoing
+	# scene is handed back it still carries hidden assets and draw distances,
+	# and a Save All in that window would write them.
+	scene_changed.connect(_on_scene_changed)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
 	# door toggling + variant cycling need viewport clicks even with nothing
 	# edited/selected
 	set_input_event_forwarding_always_enabled()
 
-	# THE SNAPSHOT GOES ON NOW, not deferred, and the order is the point.
-	# _enter_tree leaves the dropdown on Low-Poly by design (every session starts
-	# safe), and _startup applies whatever the dropdown says to every placed prop.
-	# Correcting the dropdown one frame later would mean the scene is stripped
-	# back to SDK proxies first and put back afterwards - visibly, and for nothing.
-	if _kept.has("ui"):
-		var _ui: Dictionary = _kept["ui"]
-		_kept.erase("ui")
-		_soft_restore = false
-		_soft_applied = true
-		_apply_ui(_ui)
 	_startup.call_deferred()
-	# ASK GITHUB ONCE ON OPEN. _check_plugin_update existed, worked, and was
-	# called by NOTHING - the update button could never appear, which a user
-	# proved by releasing v2.3.0 and watching no panel offer it. Deferred so
-	# the dock is in the tree before the HTTP node parents to it.
-	call_deferred("_check_plugin_update")
 
 
 # THE STATE OF THE PANEL, for a saved log.
@@ -2507,7 +2123,7 @@ func _set_unfocused_drawing(on: bool) -> void:
 	var es := EditorInterface.get_editor_settings()
 	if es == null:
 		return
-	var k := HighpolyFlightRun.K_SLEEP_UNFOCUSED
+	var k := HighpolySleepPark.K_SLEEP_UNFOCUSED
 	if on:
 		var was: int = int(es.get_setting(k)) if es.has_setting(k) \
 			else UNFOCUS_DEFAULT
@@ -2544,7 +2160,7 @@ func _restore_unfocused_pending(announce := false) -> bool:
 	if es == null or not (v is Dictionary):
 		return false
 	var back: int = int((v as Dictionary).get("unfocused", UNFOCUS_DEFAULT))
-	es.set_setting(HighpolyFlightRun.K_SLEEP_UNFOCUSED, back)
+	es.set_setting(HighpolySleepPark.K_SLEEP_UNFOCUSED, back)
 	if announce:
 		Log.info("background drawing off: the editor throttles to %d us "
 			% back + "between frames again when it is not focused.")
@@ -2599,18 +2215,12 @@ func _settings_snapshot() -> PackedStringArray:
 	out.append("%-22s %s" % ["map context", yn.call(mapctx_on)])
 	out.append("%-22s %s" % ["map objects", yn.call(mapctx_objects)])
 	out.append("%-22s %s" % ["skyline", yn.call(mapctx_backdrop)])
-	out.append("%-22s %s" % ["water", yn.call(mapctx_water)])
 	# No chip any more: they arrive with the ground. Reported from the map
 	# context so a saved log still says whether they are on screen - yn() would
 	# print "unavailable" for the missing button, which reads as broken.
 	out.append("%-22s %s" % ["roads and paths",
 		("ON (with the ground)" if mapctx != null and mapctx._show_roads
 		else "off")])
-	out.append("%-22s %s" % ["fx", yn.call(mapctx_fx)])
-	out.append("%-22s %s" % ["lighting", yn.call(mapctx_light)])
-	out.append("%-22s %s" % ["  sdfgi + ssao", yn.call(mapctx_gi)])
-	out.append("%-22s %s" % ["  sun shadows", yn.call(mapctx_shadows)])
-	out.append("%-22s %s" % ["  map lights", yn.call(mapctx_maplights)])
 	out.append("%-22s %s" % ["cull placed objects", yn.call(mapctx_optimize)])
 	out.append("%-22s %s" % ["collision overlay", yn.call(col_chk)])
 	if mapctx_range != null:
@@ -2623,19 +2233,12 @@ func _settings_snapshot() -> PackedStringArray:
 			else ("MAXIMUM, no distance culling" if r >= int(mapctx_range.max_value)
 			else "%d m" % r)])
 	if mapctx_variant != null and mapctx_variant.selected > 0:
-		out.append("%-22s %s" % ["gamemode variant",
+		out.append("%-22s %s" % ["variant layer",
 			mapctx_variant.get_item_text(mapctx_variant.selected)])
 	return out
 
 
 func _exit_tree() -> void:
-	var bf6_menu := PluginMenu.find()
-	if bf6_menu != null:
-		bf6_menu.unregister_plugin("highpoly")
-		bf6_menu.unregister_plugin("highpoly.loadout")
-	if _loadout_inspector != null:
-		remove_inspector_plugin(_loadout_inspector)
-		_loadout_inspector = null
 	# The clean-exit marker. Its ABSENCE next session is what says the editor
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
@@ -2656,39 +2259,11 @@ func _exit_tree() -> void:
 	HighpolyProfile.set_enabled(false)
 	if get_tree().node_added.is_connected(_on_node_added):
 		get_tree().node_added.disconnect(_on_node_added)
+	if scene_changed.is_connected(_on_scene_changed):
+		scene_changed.disconnect(_on_scene_changed)
 	var esel := EditorInterface.get_selection()
 	if esel.selection_changed.is_connected(_on_selection_changed):
 		esel.selection_changed.disconnect(_on_selection_changed)
-	# A SOFT REOPEN IS NOT A SHUTDOWN. The same plugin is coming straight back,
-	# so nothing below needs undoing, and undoing it is exactly what made a layout
-	# change cost a full rebuild. Hand the long-lived services across and stop.
-	if _soft_reopen:
-		_soft_reopen = false     # one reopen, not every disable from here on
-		_kept["ui"] = _capture_ui()
-		_keep_service("mapctx", mapctx)
-		_keep_service("previews", previews)
-		_keep_service("profiler", profiler)
-		_keep_service("jobs", jobs)
-		Log.hook(Callable())     # never call into a freed panel
-		if tools_btn:
-			remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
-			tools_btn.queue_free()
-			tools_btn = null
-		# A DOCKED CONTROL HAS TO BE TAKEN OUT BEFORE ITS OWNER GOES.
-		#
-		# win.free() takes dock_root with it only while dock_root is inside the
-		# window. Docked, it is parented into the editor's own dock column
-		# instead, so freeing the window leaves it sitting there - a tab
-		# belonging to a plugin that no longer exists, which survives into the
-		# editor's saved layout.
-		if _is_docked():
-			remove_control_from_docks(dock_root)
-			dock_root.queue_free()
-			dock_root = null
-		if win:
-			win.free()
-			win = null
-		return
 	# Their ground decal is a saved node we only ever HID; a plugin that is being
 	# switched off must not leave a piece of the user's scene invisible.
 	if mapctx != null:
@@ -2706,52 +2281,29 @@ func _exit_tree() -> void:
 		PlacedCull.release(r)
 		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
-		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.restore(r)                             # overlays off, SDK proxies back
-	if previews: previews.shutdown()                       # SDK's own icons back
 	Log.hook(Callable())         # never call into a freed panel
 	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
-	if tools_btn:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
-		tools_btn.queue_free()
-		tools_btn = null
-	# Out of the dock column first, or freeing the window frees nothing: docked,
-	# dock_root is not the window's child and would be left behind as a tab
-	# belonging to a plugin that has been switched off.
-	if _is_docked():
-		remove_control_from_docks(dock_root)
-		dock_root.free()
-		dock_root = null
-	if win:
-		# free(), not queue_free(): teardown DOES run at editor shutdown, but the
-		# deferred queue is not flushed before the process exits, so a queued
-		# window is never actually freed. Measured — a leaked Viewport, Camera,
-		# Scenario, Environment, Canvas and CanvasItem at exit, all of which is
-		# one Window. Freeing here takes the panel root, the scroller and
-		# everything under them with it.
-		win.free()
-		win = null
-		dock_root = null
-		dock_scroll = null
+	_remove_dock(true)
+
+# A DOCKED CONTROL HAS TO BE TAKEN OUT BEFORE IT IS FREED, or it stays behind as
+# a tab belonging to a plugin that no longer exists and survives into the
+# editor's saved layout. free(), not queue_free(), on a real shutdown: teardown
+# does run at editor exit, but the deferred queue is not flushed before the
+# process ends, so a queued panel would be reported as leaked.
+func _remove_dock(now: bool) -> void:
+	if dock_root != null and is_instance_valid(dock_root):
+		if dock_root.get_parent() != null:
+			remove_control_from_docks(dock_root)
+		if now:
+			dock_root.free()
+		else:
+			dock_root.queue_free()
+	dock_root = null
+	dock_scroll = null
 
 # ---------- startup ----------
 func _startup() -> void:
-	# UNATTENDED SESSIONS, when the environment asks for one. Both run the real
-	# dock path over the real scene and quit with a report, which is the only way
-	# to measure what a user actually experiences — a bench that loads the same
-	# meshes into a bare tree measures a different world.
-	#
-	# Checked FIRST and returning: an unattended run has nobody at the keyboard.
-
-	# The performance run (tools/perfrun.py) is tested before the autorun because
-	# the two configure the dock differently, and a stale BF6_AUTORUN left in the
-	# environment must not shadow a perf run that was explicitly asked for.
-	if HighpolyFlightRun.requested():
-		HighpolyFlightRun.run(self, dock, mapctx)
-		return
-	if HighpolyAutorun.requested():
-		HighpolyAutorun.run(self, dock, mapctx)
-		return
 	_apply_open_scene()
 
 # Draw the open scene with whatever Detail Mode we start in.
@@ -2835,37 +2387,65 @@ func _marked_meshes(root: Node) -> Array:
 # memory, which is no help to a file that was written an hour earlier.
 #
 # _apply_changes is the editor's "about to save" hook. Put the scene back to
-# stock here, let the save write a stock file, restore the preview on the next
-# frame. Cheap for the same reason a mode switch is cheap: the overlays stay
-# parented and only visibility flips, so nothing is rebuilt, re-fitted or
-# re-read. It costs two visibility walks per Ctrl+S.
+# stock here, let the save write a stock file, restore the preview right after.
+# The overlays stay parented and only visibility flips, so nothing is rebuilt,
+# re-fitted or re-read. The restore is synchronous and touches only what was
+# stocked: the overlays that were showing, on the scene that was stocked, and
+# nothing else. A swap pass the save interrupted is restarted afterwards.
+# Cost per Ctrl+S: four whole-scene walks to stock, one to restore, plus two
+# flags per shown prop.
 var _stocked_for_save := false
+var _stocked_root: Node = null       # the scene the guard changed, and only that one
+var _stocked_nodes: Array = []       # proxies whose overlay was showing before the save
+var _stocked_resume := false         # a swap pass was mid-flight when the save came
 
 func _apply_changes() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null or _stocked_for_save:
 		return
 	_stocked_for_save = true
+	_stocked_root = r
+	# A swap pass parked between slices would wake up against a stocked scene
+	# and start re-dressing it. Retire it now; it is restarted after the save.
+	_stocked_resume = _swap_busy
+	if _swap_busy:
+		HighpolyVitals.crumb("idle, nothing building")   # its pass will not say so
+	_swap_gen += 1
+	_swap_busy = false
 	PlacedCull.release(r)              # visibility_range_* back to what it was
 	SdkHide.restore_all(r)             # the level's own assets and terrain back
 	if mapctx != null:
 		mapctx.restore_sdk_decals()    # their ground decal back
-	HighpolyLib.restore(r)             # overlays hidden, SDK proxies shown
+	_stocked_nodes = HighpolyLib.restore_visible(r)   # overlays hidden, SDK proxies shown
 	# Deferred rather than awaited: the save runs the moment this returns, so
 	# anything queued here lands after the file has been written.
 	call_deferred("_unstock_after_save")
 
 
+# Put back exactly what _apply_changes took off, in one go, before the next
+# frame is drawn: the renderer never sees the stocked scene and nothing is
+# rebuilt. Only onto the scene that was stocked - after "close tab and save"
+# the edited scene is a different one and must be left alone.
 func _unstock_after_save() -> void:
 	if not _stocked_for_save:
 		return
-	_stocked_for_save = false
-	if EditorInterface.get_edited_scene_root() == null:
+	var r: Node = _stocked_root
+	var nodes := _stocked_nodes
+	var resume := _stocked_resume
+	_stocked_root = null
+	_stocked_nodes = []
+	_stocked_resume = false
+	if r == null or not is_instance_valid(r) \
+			or EditorInterface.get_edited_scene_root() != r:
+		_stocked_for_save = false
 		return
 	_sdk_assets_hidden(mapctx_objects != null and mapctx_objects.button_pressed)
 	_sdk_terrain_hidden(mapctx_on != null and mapctx_on.button_pressed)
-	await _apply_scene()
+	HighpolyLib.reshow(nodes, r)
 	_reapply_placed_cull()
+	_stocked_for_save = false
+	if resume:
+		_apply_scene()                 # finish the pass the save interrupted
 
 
 # THE BUILD AND THE PLACED PROPS ARE THE SAME WORK, done once.
@@ -2896,414 +2476,30 @@ func _swap_placed_after_build() -> void:
 	_reapply_placed_cull()
 
 
-# THE PANEL COMES BACK THE WAY IT WAS, which is a separate question from the
-# scene coming back.
-#
-# The scene survives a soft reopen because nothing tears it down. The CONTROLS do
-# not: they are built fresh, so they come up on their shipped defaults - Low-Poly,
-# every chip off - while the scene still has the scenery on and the props swapped.
-# The panel then disagrees with the level it is describing, and the first toggle
-# you touch acts on the panel's idea rather than the scene's.
-#
-# Reading the saved per-map state back is the wrong repair: that is what was on
-# disk, and what matters is what was on SCREEN a moment ago, which may be neither
-# saved nor savable yet. So the live values are carried across with the services.
-#
-# Applied with no signals: every one of these already describes something the
-# scene is doing, so firing the handlers would rebuild what is already built.
-func _capture_ui() -> Dictionary:
-	var chips := {}
-	for e in _ui_chips():
-		var c: Button = e[1]
-		if c != null and is_instance_valid(c):
-			chips[str(e[0])] = c.button_pressed
-	return {
-		"chips": chips,
-		"mode": mode_btn.get_selected_id() if mode_btn != null else -1,
-		"range": mapctx_range.value if mapctx_range != null else -1.0,
-		"fill": mapctx_fill.value if mapctx_fill != null else -1.0,
-		"photo": mapctx_photo.value if mapctx_photo != null else -1.0,
-		"variant": mapctx_variant.selected if mapctx_variant != null else -1,
-		"scroll": dock_scroll.scroll_vertical if dock_scroll != null else 0,
-		"open": win != null and win.visible,
-		"rect": Rect2i(win.position, win.size) if (win != null and win.visible) else Rect2i(),
-	}
-
-
-func _apply_ui(d: Dictionary) -> void:
-	var chips: Dictionary = d.get("chips", {})
-	for e in _ui_chips():
-		var c: Button = e[1]
-		if c != null and is_instance_valid(c) and chips.has(str(e[0])):
-			c.set_pressed_no_signal(bool(chips[str(e[0])]))
-	var m := int(d.get("mode", -1))
-	if mode_btn != null and m >= 0:
-		mode_btn.select(mode_btn.get_item_index(m))
-		if previews != null:
-			previews.tier = _mode()
-			previews.textured = _textured()
-	var rg := float(d.get("range", -1.0))
-	if mapctx_range != null and rg >= 0.0:
-		mapctx_range.set_value_no_signal(rg)
-		if mapctx_range_val: mapctx_range_val.text = _range_label(rg)
-	var fl := float(d.get("fill", -1.0))
-	if mapctx_fill != null and fl >= 0.0:
-		mapctx_fill.set_value_no_signal(fl)
-		if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fl)
-	var pv := float(d.get("photo", -1.0))
-	if mapctx_photo != null and pv >= 0.0:
-		mapctx_photo.set_value_no_signal(pv)
-		if mapctx_photo_val: mapctx_photo_val.text = "%d%%" % int(pv)
-		MapContextScript.colormap_strength = clampf(pv / 100.0, 0.0, 1.0)
-		MapContextScript.colormap_enabled = pv > 0.5
-	var vi := int(d.get("variant", -1))
-	if mapctx_variant != null and vi >= 0 and vi < mapctx_variant.item_count:
-		mapctx_variant.select(vi)
-	# The statics the chips only MIRROR have to be told too, because nothing
-	# fired a handler to tell them.
-	if mapctx_fx != null:
-		MapContextScript.show_fx_cards = mapctx_fx.button_pressed
-	_refresh_gates()
-	_lighting_subs_enabled(mapctx_light != null and mapctx_light.button_pressed)
-	# The window is a child of the editor, not of the dock, so a reopen closes it
-	# and the launcher button comes back untoggled. Put it back where it was.
-	if bool(d.get("open", false)) and win != null:
-		var rc: Rect2i = d.get("rect", Rect2i())
-		if rc.size.x > 0:
-			_win_rect = rc
-		if tools_btn != null:
-			tools_btn.set_pressed_no_signal(true)
-		_set_tools_visible(true)
-	var sc := int(d.get("scroll", 0))
-	if dock_scroll != null and sc > 0:
-		# after the layout settles, or the scroller clamps it to a height the
-		# content has not reached yet
-		_restore_scroll.call_deferred(sc)
-
-
-func _restore_scroll(v: int) -> void:
-	if dock_scroll != null and is_instance_valid(dock_scroll):
-		dock_scroll.scroll_vertical = v
-
-
-# Every control whose position is part of "how the panel was". Named, because a
-# reopen rebuilds them and only the name survives.
-func _ui_chips() -> Array:
-	return [
-		["on", mapctx_on], ["objects", mapctx_objects],
-		["backdrop", mapctx_backdrop], ["water", mapctx_water],
-		["fx", mapctx_fx], ["light", mapctx_light], ["gi", mapctx_gi],
-		["shadows", mapctx_shadows], ["maplights", mapctx_maplights],
-		["optimize", mapctx_optimize], ["col", col_chk], ["shape", shape_chk],
-		["iso", iso_chk], ["ovr", ovr_chk], ["pick", diag_pick],
-	]
-
-
-# ---------- reopening the panel ----------
-#
-# WHAT LIVE RELOAD CANNOT DO. Replacing a script updates the code every existing
-# object runs, which is why a material fix reaches a prop already on screen. It
-# cannot un-create an object. This panel is built inline in _enter_tree, so every
-# control on it was constructed when the editor opened: a change that ADDS,
-# REMOVES or RELABELS a control changes the function that would build it and not
-# the buttons already sitting there. So the plugin is reopened, which runs the
-# real _exit_tree and _enter_tree and rebuilds the panel by exactly the path that
-# builds it at startup.
-#
-# A REOPEN MUST NOT COST THE SCENERY. The first version let the ordinary teardown
-# run, which frees _MAP_CONTEXT and every overlay, so the scene rebuilt itself
-# afterwards - a minute of work to move a button. And because this file is the
-# one that changes most, that was nearly every press of Check for updates. The
-# rebuild was the complaint that started the live reload in the first place.
-#
-# So a reopen for a layout change is SOFT:
-#
-#   * the scene is left exactly as it is. Nothing is restored, because nothing is
-#     going away: the same plugin is coming straight back.
-#   * the long-lived services (the map context, the previews, the recorder, the
-#     job queue) are handed across rather than rebuilt. They hold the open game
-#     source, the cell index, the icon cache - state that costs minutes to
-#     rebuild and nothing to keep.
-#
-# They are kept by REPARENTING them out of the dock before it is freed, into the
-# editor's own base control, and picked up again by _enter_tree. A static holds
-# the references: statics live on the script, and the script is not going
-# anywhere, only this object is.
-const PLUGIN_NAME := "highpoly_toggle"
-static var _kept: Dictionary = {}     # service name -> Node, across a soft reopen
-static var _soft_reopen := false      # set by _reopen_panel, read by _exit_tree
-# The other half of the same fact, read by the startup restore: it must adopt the
-# scenery that is standing rather than sweep it and build a fresh copy.
-static var _soft_restore := false
-# Set for the life of this instance when it came back from a soft reopen, so the
-# scene-change path does not run the disk restore over a panel that already
-# describes the scene correctly.
-var _soft_applied := false
-var _needs_reopen := false
-# The cold swap's impact class ("materials"/"mixed"/"geometry"), carried from
-# the swap marker to the map state restore, which rebuilds stale scenery once
-# and clears it. Empty = no swap, or a swap that cannot reach anything built.
-var _swap_impact := ""
-
-func _reopen_panel() -> void:
-	Log.info("Reopening the panel to apply a layout change. The scenery and the "
-		+ "open game source are kept.")
-	_soft_reopen = true
-	_soft_restore = true
-	EditorInterface.call_deferred("set_plugin_enabled", PLUGIN_NAME, false)
-	EditorInterface.call_deferred("set_plugin_enabled", PLUGIN_NAME, true)
-
-
-# Hand a service across the reopen. Reparented rather than orphaned: a node with
-# no parent is outside the tree, and these run timers and awaits.
-func _keep_service(name: String, node: Node) -> void:
-	if node == null or not is_instance_valid(node):
+# The Object Library icon renderer is gone (fork F-04). Its PNG cache in
+# user://highpoly/thumbs is read by nothing any more, and on the owner's
+# machine 666 of its 1,539 files were the same corrupt render (HP-016).
+func _sweep_icon_cache() -> void:
+	var dir := "user://highpoly/thumbs"
+	if not DirAccess.dir_exists_absolute(dir):
 		return
-	var host := EditorInterface.get_base_control()
-	if host == null:
-		return
-	if node.get_parent() != null:
-		node.get_parent().remove_child(node)
-	host.add_child(node)
-	_kept[name] = node
+	var n := 0
+	for f in DirAccess.get_files_at(dir):
+		if DirAccess.remove_absolute(dir.path_join(f)) == OK:
+			n += 1
+	DirAccess.remove_absolute(dir)
+	Log.info("Removed the old Object Library icon cache (%d file(s))." % n)
 
 
-# The other side: adopt one if a soft reopen left it, else null for the caller to
-# construct. Cleared as it is taken, so a later ordinary start cannot pick up a
-# service belonging to a session that has ended.
-func _take_service(name: String) -> Node:
-	if not _kept.has(name):
-		return null
-	var n = _kept[name]
-	_kept.erase(name)
-	if n == null or not is_instance_valid(n):
-		return null
-	if n.get_parent() != null:
-		n.get_parent().remove_child(n)
-	return n
+# The version in plugin.cfg. The self-updater that used to report it is gone.
+func _plugin_version() -> String:
+	var cf := ConfigFile.new()
+	var cfg := (get_script() as Script).resource_path.get_base_dir().path_join("plugin.cfg")
+	if cf.load(cfg) != OK:
+		return "0.0.0"
+	return str(cf.get_value("plugin", "version", "0.0.0"))
 
-
-func _hot_reload() -> bool:
-	# Asked on BOTH sides of the reload, because the answer is the difference.
-	# See HighpolyGameSource.geom_epoch for why it has to be a call and not a
-	# constant read.
-	var epoch_before: int = HighpolyGameSource.geom_epoch()
-	var r: Dictionary = HighpolyReload.reload_code()
-	var geom_changed: bool = HighpolyGameSource.geom_epoch() != epoch_before
-	var names: Array = r["names"]
-	if bool(r["first"]):
-		Log.info("Live reload armed: this install is now the baseline, so the "
-			+ "next press picks up whatever has changed since.")
-		return true
-	if not (r["failed"] as Array).is_empty():
-		lbl.text = "Some plugin files would not reload — restart the editor"
-		Log.error("Live reload could not replace: %s" % str(r["failed"]))
-		return false
-	if names.is_empty():
-		Log.info("Plugin code unchanged — nothing to reload.")
-		return true
-
-	var what := HighpolyReload.impact(names, geom_changed)
-	# HEAL THE LIVING INSTANCES FIRST, before anything re-dresses through them.
-	# A swap replaces code but never runs the new initializers on an existing
-	# object, so a member the update ADDED is null on every live instance - and
-	# the very next material build dies on it, dressing the whole map white.
-	# (That exact regression shipped once; see HighpolyReload.heal_new_members.)
-	var _gs0 = mapctx.game_source if mapctx != null else null
-	var _healed := 0
-	for o in [mapctx, _gs0,
-			(_gs0.src if _gs0 != null else null),
-			(_gs0.walk if _gs0 != null else null),
-			previews, jobs]:
-		_healed += HighpolyReload.heal_new_members(o)
-	if _healed > 0:
-		Log.info("Initialized %d member(s) the update added on live objects" % _healed)
-	# REFRESH WHAT IS CHEAP TO RE-ASK, and nothing else.
-	#
-	# map_data holds answers derived from the install, and a reader fix cannot
-	# reach an answer already given. The first version of this dropped the whole
-	# summary, which was far too blunt: apply() clears the scene BEFORE it reloads
-	# the data, so a rebuild that then failed on a missing key left the level torn
-	# down with every later toggle hitting the same error. It also put a minute of
-	# terrain work on the main thread inside a toggle handler.
-	#
-	# Water is re-asked instead, on its own, because it is one small partition
-	# parse and because its staleness is invisible by construction: map_data only
-	# writes a "water" key when water is FOUND, so a level read before the fix
-	# carries an ABSENT key, which every consumer reads as "this level has no
-	# water" rather than "not looked up yet".
-	if what != "code" and what != "none":
-		var _gs = mapctx.game_source if mapctx != null else null
-		if _gs != null and _gs.has_method("refresh_water"):
-			_gs.refresh_water()
-		# The scene's Water node was built from the PRE-reload answer, so a
-		# refreshed answer is invisible until the layer rebuilds. If it is on,
-		# re-fire its own handler (deferred: this runs inside the reload) so a
-		# water fix reaches the screen without a manual off/on - the exact step
-		# users skip, reasonably, after pressing a button called "updates".
-		if mapctx_water != null and mapctx_water.button_pressed:
-			(func():
-				if mapctx_water != null and is_instance_valid(mapctx_water):
-					mapctx_water.toggled.emit(true)).call_deferred()
-	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
-	match what:
-		"code":
-			# Dock and logging only. Nothing already built can look different,
-			# so re-dressing thousands of surfaces would be pure cost.
-			lbl.text = "Reloaded %d file(s)" % names.size()
-		"materials", "mixed":
-			var gs = mapctx.game_source if mapctx != null else null
-			if gs != null and gs.has_method("invalidate_materials"):
-				var st: Dictionary = gs.invalidate_materials()
-				Log.info("Re-dressed %d mesh(es), %d surface(s) in %d ms"
-					% [st["meshes"], st["surfaces"], st["ms"]])
-				lbl.text = "Reloaded %d file(s), re-dressed %d mesh(es)" 					% [names.size(), st["meshes"]]
-			else:
-				lbl.text = "Reloaded %d file(s)" % names.size()
-			# AND THE OBJECTS THE USER PLACED, which the re-dress above does not
-			# reach: it re-dresses the meshes the MAP CONTEXT recorded, and a
-			# placed object's overlay is a separate node holding its own mesh.
-			# Without this a material fix landed on every prop on the map and on
-			# anything placed after the reload, and left the objects already in
-			# the scene untouched.
-			#
-			# Guarded and paced by _swap_placed_after_build rather than calling
-			# the apply straight: it refuses in Low-Poly, where the SDK's own
-			# proxies are what the user asked to see, and it restores the
-			# distance cull afterwards.
-			LibScript.build_epoch += 1
-			_swap_placed_after_build()
-			if what == "mixed":
-				# Those files resolve materials AND build geometry, and only the
-				# first half of that is live now. Saying so beats letting a road
-				# height change look like it applied.
-				lbl.text += ". Rebuild the map to pick up the geometry change."
-				Log.info("Those files also build geometry (roads, terrain drape, "
-					+ "prop meshes). If that is what changed, toggle Map Context "
-					+ "off and on.")
-		"geometry":
-			# Honest rather than convenient: the built meshes came out of the
-			# code that just changed, and no amount of re-dressing fixes a
-			# vertex. Say what it needs instead of half-doing it.
-			lbl.text = "Reloaded %d file(s) — rebuild the map to apply" 				% names.size()
-			Log.warn("Those files decide what geometry is BUILT, so the meshes "
-				+ "already in the scene are stale. Toggle Map Context off and "
-				+ "on to rebuild.")
-	# The panel is built once, at startup. A change to the file that builds it
-	# cannot move a control that already exists, so say so and put the button
-	# that applies it where the message is.
-	# DONE, not offered. The plugin knows when a layout change cannot be applied
-	# in place, and a button that must be pressed after another button is one the
-	# user has to learn the meaning of. The caller reopens and stops there,
-	# because reopening frees this object.
-	_needs_reopen = names.has("highpoly_toggle.gd")
-	if _needs_reopen:
-		Log.info("The panel itself changed. Its controls were built when the "
-			+ "editor opened, so the plugin is being reopened to build them "
-			+ "again. The level scenery is rebuilt with it.")
-	return true
-
-
-func _check_updates_now() -> void:
-	check_btn.disabled = true
-	# THE BUTTON SAYS "Check for updates", SO CHECK GITHUB. This call was only
-	# ever wired to nothing (see _enter_tree); the button applied staged files
-	# and reloaded local changes but never asked the releases API, so a fresh
-	# release sat invisible until an editor restart - and then still invisible,
-	# because the startup check was not wired either. Announced, so pressing
-	# the button says "up to date" or "vX.Y.Z is available" instead of nothing.
-	_check_plugin_update(true)
-	# STAGED UPDATES FIRST. Mid-session fixes cannot be written into res://
-	# (the editor hot-reloads changed scripts underneath running code - the
-	# "Bad address index" crash), so they land in user://highpoly/staged and
-	# THIS press - a moment the user chose - is what moves them into the addon
-	# before the normal reload below picks them up. Refused while anything is
-	# building, because swapping code under a live build is the exact crash
-	# the staging exists to avoid. "starting up" counts as quiet: it is the
-	# boot crumb, and nothing has armed a build yet when it still reads that.
-	if HighpolyReload.staged_count() > 0:
-		var _c := HighpolyVitals.crumb_now()
-		if not (HighpolyVitals.crumb_is_idle() or _c == "starting up"):
-			check_btn.disabled = false
-			lbl.text = "An update is staged, but something is building (%s) — press again when it settles" % _c
-			return
-		var staged: Dictionary = HighpolyReload.apply_staged()
-		if not (staged["failed"] as Array).is_empty():
-			check_btn.disabled = false
-			lbl.text = "Some staged files could not be applied — try once more, or restart the editor"
-			Log.error("Staged update could not replace: %s" % str(staged["failed"]))
-			return
-		var _ap := staged["applied"] as Array
-		if not _ap.is_empty():
-			Log.info("Applied %d staged file(s): %s" % [_ap.size(), ", ".join(_ap)])
-		# WHAT THIS BUTTON CANNOT DO, said plainly rather than left to be
-		# discovered. Scripts and shaders go live here; anything else - the
-		# native extension, the fx data files, binaries - is only picked up
-		# when the editor next starts, because nothing can swap them under a
-		# running session. Saying so is what makes the button trustworthy
-		# enough to use instead of closing the editor every time.
-		var _ig := (staged.get("ignored", []) as Array)
-		if not _ig.is_empty():
-			Log.warn(("%d staged file(s) are not code and stay where they are "
-				+ "until the editor is next started: %s")
-				% [_ig.size(), ", ".join(_ig)])
-	# CODE FIRST, and only what actually moved.
-	#
-	# This button used to be about downloading models. There are no models to
-	# download: everything is read from the install. What is left is the thing it
-	# grew into, which is applying plugin code without an editor restart. The
-	# scripts and shaders whose CONTENT differs are replaced in place, and objects
-	# already holding them run the new code immediately.
-	#
-	# Hash-compared rather than mtime-compared on purpose. A zip extraction
-	# stamps every file with the same "now", so an mtime test would replay the
-	# entire addon on every press and re-dress a map for nothing.
-	#
-	# SCRIPT CHANGES TAKE THE COLD SWAP, not the live rebind. Hot reload onto
-	# live instances is where every "now restart the editor" came from: null
-	# new members, constants folded stale into callers, big scripts silently
-	# keeping old bytecode. The cold swap disables the plugin, replaces the
-	# scripts while nothing holds them, and re-enables - a plugin-only
-	# restart in a couple of seconds. Triggered DEFERRED off the tree because
-	# the disable frees THIS dock, and freeing the object whose method is on
-	# the stack is a crash. Shader-only changes keep the cheap live path.
-	var pend: Dictionary = HighpolyReload.pending()
-	var moved: Array = (pend["changed"] as Array) + (pend["added"] as Array)
-	var has_gd := false
-	for f in moved:
-		if str(f).get_extension().to_lower() == "gd":
-			has_gd = true
-			break
-	if has_gd and not bool(pend["first"]):
-		lbl.text = "Applying the update - the panel rebuilds itself in a moment"
-		Log.info("Cold swap: %d changed file(s), restarting the plugin in place"
-			% moved.size())
-		get_tree().process_frame.connect(Callable(HighpolyReload, "cold_swap"),
-			CONNECT_ONE_SHOT | CONNECT_DEFERRED)
-		return
-	if not _hot_reload():
-		check_btn.disabled = false
-		return
-	if _needs_reopen:
-		# Nothing after this point: reopening frees the plugin, and the storage
-		# readout below awaits, so it would resume inside a freed object.
-		lbl.text = "Applying a panel change…"
-		_reopen_panel()
-		return
-	check_btn.disabled = false
-	_refresh_storage()
-
-# ---------- the floating tool panel ----------
-# The tools live in their own window rather than an editor dock. Level building
-# needs the 3D viewport wide, and a right-hand dock permanently costs ~400px of
-# it; a panel you open, move to a second monitor and close again costs nothing
-# when it is shut. The launcher sits in the 3D viewport toolbar beside the SDK's
-# own "Apply Texture" button, so both plugins are found in the same place.
-const WIN_SIZE := Vector2i(440, 900)
-const WIN_MIN := Vector2i(340, 380)
-const WAVES := "res://addons/highpoly_toggle/waves.ogv"
-const WAVES_META := "res://addons/highpoly_toggle/waves.json"
-const TINT_DEFAULT := 0.72     # how far the backdrop dims once the controls are up
+# ---------- panel layout ----------
 const PANEL_PAD := 16          # controls held off the outline, left/right
 const PANEL_PAD_V := 12        # ...and top/bottom
 
@@ -3315,6 +2511,7 @@ const PANEL_PAD_V := 12        # ...and top/bottom
 # control grows a description later (adopt() is idempotent).
 func _adopt_tips() -> void:
 	if tips == null or dock == null: return
+	Theme_.style_all(dock)
 	tips.adopt(dock)
 	# scrolling moves the controls out from under a shown box
 	var vs := dock_scroll.get_v_scroll_bar() if dock_scroll else null
@@ -3637,7 +2834,6 @@ func _refresh_job_bar() -> void:
 func _refresh_job_bar_body() -> void:
 	var busy: bool = jobs.busy()
 	job_row.visible = busy
-	if check_btn: check_btn.visible = not busy
 	if not busy: return
 	# the journal's "did the user see progress" counter: only a VALUE CHANGE
 	# counts - redrawing the same percentage is not progress to a human
@@ -3706,6 +2902,7 @@ func _section(id: String, section_title: String, description: String) -> Node:
 	sec.opened_changed.connect(func(open: bool):
 		_tips_hide()                    # the description answered its question
 		_save_section_state()
+		if open and id == "storage": _refresh_storage.call_deferred()
 		if open: _scroll_to.call_deferred(sec))
 	sections.append(sec)
 	return sec.content
@@ -3737,343 +2934,48 @@ func _restore_section_state() -> void:
 		if is_instance_valid(sec) and ((want as Array).has(sec.title_lbl.text) or (want as Array).has(str(sec.get_meta("menu_id", "")))):
 			sec.set_open(true, false)
 
-# The panel is layered back-to-front:
-#   bg      opaque, so the panel is legible with no video at all
-#   video   the loop, cover-scaled and clipped
-#   tint    darkens the loop; the boot sequence animates this 0 -> the palette's tint
-#   scroll  the controls; the boot sequence fades this in
-#   boot    the logo flash, on top of everything, then gone
-#   border  the outline, always last so nothing paints over it
-func _build_backdrop() -> void:
-	var bg := ColorRect.new()
-	bg.color = Theme_.col("splash_bg")
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dock_root.add_child(bg)
-	dock_root.move_child(bg, 0)
-
-	var waves_path := SharedMenu.file("waves.ogv")
-	var waves_meta_path := SharedMenu.file("waves.json")
-	if FileAccess.file_exists(waves_path):
-		# built directly instead of load()ed: an editor plugin's assets can be
-		# dropped in or replaced without waiting for a reimport, same as the
-		# logo and the map tiles
-		var vs := VideoStreamTheora.new()
-		vs.file = waves_path
-		video = VideoStreamPlayer.new()
-		video.stream = vs
-		video.expand = true          # fills the node; _fit_video sizes the node
-		video.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		if "loop" in video:
-			video.loop = true
-		else:
-			video.finished.connect(func(): _sync_backdrop.call_deferred())
-		dock_root.add_child(video)
-		dock_root.move_child(video, 1)
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(waves_meta_path)) \
-			if FileAccess.file_exists(waves_meta_path) else null
-		if j is Dictionary:
-			_vid_size = Vector2(float((j as Dictionary).get("width", 480)),
-				float((j as Dictionary).get("height", 800)))
-
-	tint = ColorRect.new()
-	tint.color = Color(0, 0, 0, Theme_.num("tint", TINT_DEFAULT))
-	tint.set_anchors_preset(Control.PRESET_FULL_RECT)
-	tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dock_root.add_child(tint)
-	dock_root.move_child(tint, 2 if video != null else 1)
-
-	tips = TipsScript.new()
-	dock_root.add_child(tips)
-
-	border = Panel.new()
-	border.set_anchors_preset(Control.PRESET_FULL_RECT)
-	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	border.add_theme_stylebox_override("panel", Theme_.panel_border())
-	dock_root.add_child(border)
-
-	dock_root.clip_contents = true      # the cover-scaled video overhangs
-	dock_root.resized.connect(_fit_video)
-	dock_root.visibility_changed.connect(func(): _sync_backdrop.call_deferred())
-	dock_root.tree_entered.connect(func(): _sync_backdrop.call_deferred())
-	_fit_video()
-	_sync_backdrop.call_deferred()
-
-func _sync_backdrop() -> void:
-	Backdrop.sync(video, dock_root)
-
-# Cover, not contain: scale until the video covers the panel and let the excess
-# spill past the edges. Letterboxing a backdrop would put bars inside the border.
-func _fit_video() -> void:
-	if video == null or dock_root == null: return
-	if _vid_size.x <= 0.0 or _vid_size.y <= 0.0: return
-	var s := maxf(dock_root.size.x / _vid_size.x, dock_root.size.y / _vid_size.y)
-	video.size = _vid_size * s
-	video.position = (dock_root.size - video.size) * 0.5
-
-func _build_tool_window() -> void:
-	win = Window.new()
-	win.title = "High-Poly Tools"
-	win.min_size = WIN_MIN
-	win.size = WIN_SIZE
-	# Stays above the editor when you click back into the viewport. It must not
-	# be transient to do that: the platform display server rejects always-on-top
-	# for a window that has a transient parent ("Transient windows can't become
-	# on top of parent"), and transient on its own only raises the panel
-	# alongside its parent, which is what let clicking the viewport bury it.
-	win.transient = false
-	win.always_on_top = true
-	win.exclusive = false      # never blocks the editor: keep building while it is open
-	win.hide()
-	win.close_requested.connect(_close_tools)
-	win.visibility_changed.connect(func(): _sync_backdrop.call_deferred())
-	EditorInterface.get_base_control().add_child(win)
-	win.add_child(dock_root)
-
-	tools_btn = Button.new()
-	tools_btn.text = "High-Poly Tools"
-	tools_btn.flat = true
-	tools_btn.toggle_mode = true      # the button IS the panel's open/closed state
-	tools_btn.tooltip_text = "Open the High-Poly preview tools"
-	tools_btn.toggled.connect(_set_tools_visible)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
-
 # ---------------------------------------------------------------------------
-# TWO HOMES: the floating window, and a tab beside Inspector / Signals / Groups.
+# THE PANEL IS AN EDITOR DOCK TAB, always, from the moment the plugin is enabled.
 #
-# Closing the window used to just hide it, which threw the panel away until you
-# remembered the toolbar button. Docking instead keeps it to hand where every
-# other editor panel lives, and the toolbar button pops it back out to float.
+# It used to float in an always-on-top window opened from a 3D-toolbar button
+# and only docked itself when that window was closed. Two homes meant two sets
+# of state to persist, a window that covered BF6 Home, and a panel people had to
+# hunt for. Now it is added once, like Inspector or Signals, and the editor's
+# own layout remembers where the user dragged it.
 #
-# The panel itself never rebuilds. dock_root is one Control holding the whole
-# UI, and both homes are the same reparent - so the open reader, the built
-# overlay, the job queue and every toggle carry across untouched. That is the
-# same property the soft-reopen path depends on, for the same reason.
-# Right-hand column, lower half — the strip Inspector, Signals and Groups share.
-#
-# Which home the panel is in persists through _get_window_layout, the slice of
-# the editor's own layout file Godot hands plugins. Not project metadata: the
-# window rect and whether it was open already live there, and two places
-# remembering the same thing is how they end up disagreeing.
+# Right-hand column, lower half - the strip Inspector, Signals and Groups share.
+# Layouts saved by older builds still carry a [HighPoly] block (win_rect,
+# win_open, docked); nothing reads it any more, so it is simply ignored.
 const DOCK_SLOT := EditorPlugin.DOCK_SLOT_RIGHT_BL
 
 
-func _is_docked() -> bool:
-	return dock_root != null and is_instance_valid(dock_root) \
-		and win != null and dock_root.get_parent() != win
-
-
-# Move the panel into the editor's dock column. Idempotent.
-func _dock_panel() -> void:
-	if dock_root == null or not is_instance_valid(dock_root) or _is_docked():
+func _add_dock() -> void:
+	if dock_root == null or not is_instance_valid(dock_root):
 		return
-	if win != null and win.visible:
-		_win_rect = Rect2i(win.position, win.size)
-	if win != null:
-		win.hide()
-		if dock_root.get_parent() == win:
-			win.remove_child(dock_root)
-	# A DOCK IS A CONTAINER AND A WINDOW IS NOT, and this panel was built for the
-	# window. Inside a Window the FULL_RECT anchors set at creation do the
-	# sizing; inside a TabContainer anchors are ignored and the container sizes
-	# its child from the size flags instead - which were never set, because
-	# nothing had ever put this Control in a Container. Both homes now get what
-	# they need and neither disturbs the other: a Window ignores size flags
-	# exactly as a Container ignores anchors.
-	#
-	# dock_root.name is already "High-Poly" from _enter_tree, and that name is
-	# what the dock uses as the tab label.
+	# A dock is a Container: it sizes its child from the size flags, not anchors.
 	dock_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_root.custom_minimum_size = Vector2(260, 220)
 	add_control_to_dock(DOCK_SLOT, dock_root)
-	# Docking is a visible home, not a closed panel. The visibility callback
-	# pauses decoding only while another tab actually hides the dock.
-	_stop_boot()
-	_sync_backdrop.call_deferred()
 
 
-# Take it back out of the dock and float it.
-func _float_panel() -> void:
-	if dock_root == null or not is_instance_valid(dock_root) or win == null:
+# Bring the panel's tab to the front (used by the caching service when BF6 Home
+# or another caller asks to see progress).
+func _focus_dock() -> void:
+	if dock_root == null or not is_instance_valid(dock_root):
 		return
-	if _is_docked():
-		remove_control_from_docks(dock_root)
-	if dock_root.get_parent() != win:
-		if dock_root.get_parent() != null:
-			dock_root.get_parent().remove_child(dock_root)
-		win.add_child(dock_root)
-
-
-func _set_tools_visible(on: bool) -> void:
-	if win == null: return
-	if not on:
-		# CLOSING DOCKS IT rather than hiding it. Nothing is lost and nothing is
-		# rebuilt; the panel is simply somewhere else.
-		_win_held_for_home = false
-		_dock_panel()
-		return
-	_float_panel()
-	# Opened while BF6 Home owns the editor (the first-run open, or enabling
-	# the plugin from Home itself): stay open, but appear when Home is left.
-	if _panel_suppressed():
-		_win_held_for_home = true
-		return
-	if _win_rect.size.x > 0 and _usable(_win_rect):
-		win.position = _win_rect.position
-		win.size = _win_rect.size
-	else:
-		# NOT popup_centered(): popup() force-sets transient, and the OS
-		# refuses a transient window that is always-on-top ("Windows with the
-		# 'on top' can't become transient", once per open). Centre by hand.
-		win.size = WIN_SIZE
-		var pw := EditorInterface.get_base_control().get_window()
-		win.position = pw.position + (pw.size - win.size) / 2
-	win.show()
-	_sync_backdrop.call_deferred()
-	_maybe_play_splash()      # after show(): the sequence needs a visible panel
-
-# ---------------------------------------------------------------------------
-# BF6 HOME OWNS THE EDITOR WHILE ITS MAP MENU IS SHOWN.
-#
-# The floating tools window is always-on-top, so without this it covered the
-# map menu. Home hides every editor dock and asks optional panels to step aside
-# through the shared "bf6_workspace_panels_v1" group (API v1). Home only asks
-# the panels it finds when it opens, and this plugin is usually enabled FROM
-# Home - after that - so the Home main screen is also followed directly.
-const HOME_PANELS_GROUP := "bf6_workspace_panels_v1"
-const HOME_SCREEN := "BF6 Home"
-var _home_suppressors: Dictionary = {}
-var _home_screen_shown := false
-var _win_held_for_home := false
-
-func get_api_version() -> int:
-	return 1
-
-func set_visibility_suppressed(requester: Object, suppressed: bool) -> void:
-	if requester == null: return
-	if suppressed: _home_suppressors[requester.get_instance_id()] = true
-	else: _home_suppressors.erase(requester.get_instance_id())
-	_apply_home_suppression()
-
-func _panel_suppressed() -> bool:
-	return _home_screen_shown or not _home_suppressors.is_empty()
-
-func _join_home_chrome() -> void:
-	add_to_group(HOME_PANELS_GROUP)
-	if not main_screen_changed.is_connected(_on_main_screen_changed):
-		main_screen_changed.connect(_on_main_screen_changed)
-	_home_screen_shown = _home_screen_visible_now()
-
-func _on_main_screen_changed(screen_name: String) -> void:
-	_home_screen_shown = screen_name == HOME_SCREEN
-	_apply_home_suppression()
-
-# No getter exists for the current main screen; Home's panel is the visible
-# main-screen child whose script belongs to the Home add-on.
-func _home_screen_visible_now() -> bool:
-	var main := EditorInterface.get_editor_main_screen()
-	if main == null: return false
-	for child in main.get_children():
-		var script: Script = child.get_script() if child is Control else null
-		if child.visible and script != null and script.resource_path.begins_with("res://addons/bf6_map_selection/"):
-			return true
-	return false
-
-func _apply_home_suppression() -> void:
-	if not _panel_suppressed() and _preparation != null and is_instance_valid(_preparation):
-		_preparation.show_deferred_screen()
-	if win == null or not is_instance_valid(win): return
-	if _panel_suppressed():
-		if win.visible and not _is_docked():
-			_win_rect = Rect2i(win.position, win.size)
-			_win_held_for_home = true
-			win.hide()
-	elif _win_held_for_home:
-		_win_held_for_home = false
-		if tools_btn != null and tools_btn.button_pressed:
-			_set_tools_visible(true)
-
-# Closing mid-sequence drops it. A hidden Window still processes, so left alone
-# the boot would carry on animating a panel nobody can see, and the next open
-# would find it already finished.
-func _stop_boot() -> void:
+	# Walk up to the slot's TabContainer: from 4.6 the editor wraps a control
+	# added with add_control_to_dock in its own EditorDock, so the direct parent
+	# is not the tab container any more.
+	var tab: Node = dock_root
+	var tabs: Node = tab.get_parent()
+	while tabs != null and not (tabs is TabContainer):
+		tab = tabs
+		tabs = tabs.get_parent()
+	if tabs != null:
+		(tabs as TabContainer).current_tab = tab.get_index()
 	_tips_hide()
-	if is_instance_valid(boot):
-		boot.set_process(false)
-		boot.queue_free()
-		boot = null
-	Backdrop.settle(tint, dock_scroll, Theme_.num("tint", TINT_DEFAULT))
 
-func _close_tools() -> void:
-	# closing from the window's own X must not re-enter _set_tools_visible
-	if tools_btn: tools_btn.set_pressed_no_signal(false)
-	# The X docks it, same as untoggling the button. _dock_panel records the
-	# window rect on the way out, so floating it again lands where you left it.
-	_dock_panel()
-
-# A remembered position is only good while that monitor still exists. Unplug a
-# second screen and a restored panel would open onto coordinates nothing can
-# reach, looking exactly like the button doing nothing.
-func _usable(r: Rect2i) -> bool:
-	var probe := r.position + Vector2i(mini(40, r.size.x / 2), 10)
-	for i in range(DisplayServer.get_screen_count()):
-		if DisplayServer.screen_get_usable_rect(i).has_point(probe): return true
-	return false
-
-# Open once on a project that has never seen the plugin, so the panel introduces
-# itself instead of hiding behind a button nobody knows to press. After that the
-# saved layout decides.
-func _first_run_open() -> void:
-	var es := EditorInterface.get_editor_settings()
-	if bool(es.get_project_metadata("highpoly", "tools_seen", false)): return
-	es.set_project_metadata("highpoly", "tools_seen", true)
-	if tools_btn: tools_btn.button_pressed = true
-
-# Godot hands plugins a slice of the editor layout file to persist into, so the
-# panel comes back where it was left — including whether it was open.
-func _get_window_layout(cfg: ConfigFile) -> void:
-	if win == null: return
-	if win.visible: _win_rect = Rect2i(win.position, win.size)
-	cfg.set_value("HighPoly", "win_rect", _win_rect)
-	# Hidden only while BF6 Home is shown still counts as open.
-	cfg.set_value("HighPoly", "win_open", win.visible or _win_held_for_home)
-	cfg.set_value("HighPoly", "docked", _is_docked())
-
-func _set_window_layout(cfg: ConfigFile) -> void:
-	_win_rect = cfg.get_value("HighPoly", "win_rect", Rect2i())
-	# THE PANEL ALWAYS LIVES SOMEWHERE NOW: floating, or a tab in the dock
-	# column. There is no third state where it exists and cannot be seen, which
-	# is what "closed" used to mean and what made people hunt for the button.
-	if bool(cfg.get_value("HighPoly", "docked", false)):
-		_dock_panel.call_deferred()
-	elif tools_btn and bool(cfg.get_value("HighPoly", "win_open", false)):
-		tools_btn.button_pressed = true      # fires _set_tools_visible
-	else:
-		# Neither recorded: a layout written before the panel could dock, or a
-		# first run. Docked is the safe home - visible, out of the way, and one
-		# click from floating.
-		_dock_panel.call_deferred()
-
-# Boot animation, played on every open.
-func _maybe_play_splash() -> void:
-	if win == null or not win.visible or dock_root == null: return
-	# a fast close-and-reopen must not leave two sequences fighting over the
-	# tint and the scroller's alpha
-	_stop_boot()
-	var s = SplashScript.new()
-	s.tint = tint
-	s.ui = dock_scroll
-	s.tint_max = Theme_.num("tint", TINT_DEFAULT)
-	if s.setup(video != null):
-		dock_root.add_child(s)
-		dock_root.move_child(s, dock_root.get_child_count() - 2)   # under the border
-		boot = s
-	else:
-		# nothing to play: make sure the panel is left in its finished state
-		s.free()
-		if tint: tint.color.a = Theme_.num("tint", TINT_DEFAULT)
-		if dock_scroll: dock_scroll.modulate.a = 1.0
 
 func _human_size(bytes: int) -> String:
 	if bytes >= 1073741824:
@@ -4104,9 +3006,21 @@ func _storage_dirty() -> void:
 		_storage_timer = Timer.new()
 		_storage_timer.one_shot = true
 		_storage_timer.wait_time = 2.0
-		_storage_timer.timeout.connect(_refresh_storage)
+		_storage_timer.timeout.connect(_refresh_storage_if_open)
 		dock.add_child(_storage_timer)
 	_storage_timer.start()
+
+
+func _storage_open() -> bool:
+	var sec = _menu_sections.get("storage")
+	return sec != null and is_instance_valid(sec) and sec.is_open()
+
+
+func _refresh_storage_if_open() -> void:
+	if _storage_open():
+		_refresh_storage()
+	elif storage_lbl != null:
+		storage_lbl.text = "Open this section to measure disk usage."
 
 
 func _refresh_storage() -> void:
@@ -4130,7 +3044,9 @@ func _refresh_storage() -> void:
 	# deciding whether to delete something.
 	var geom: Array = await mapctx.dir_usage_async("user://bf6_geom")
 	if gen != _storage_gen: return
-	var total := int(props[1]) + maps_bytes + int(geom[1])
+	var texp: Array = await mapctx.dir_usage_async("user://bf6_tex")
+	if gen != _storage_gen: return
+	var total := int(props[1]) + maps_bytes + int(geom[1]) + int(texp[1])
 	# One plain sentence, then a line per thing, in the words a map builder would
 	# use. The old single line packed all of this into one dense string that
 	# never actually said what any of it was.
@@ -4139,8 +3055,10 @@ func _refresh_storage() -> void:
 		% [_fmt_n(int(props[0])), _human_size(int(props[1]))])
 	lines.append("  Levels read from your game: %s  (%s)"
 		% [_fmt_n(nmaps), _human_size(maps_bytes)])
-	lines.append("  Meshes prepared for reuse: %s  (%s)"
+	lines.append("  Geometry packs (meshes kept for the next build): %s  (%s)"
 		% [_fmt_n(int(geom[0])), _human_size(int(geom[1]))])
+	lines.append("  Texture packs (textures kept for the next build): %s  (%s)"
+		% [_fmt_n(int(texp[0])), _human_size(int(texp[1]))])
 	storage_lbl.text = "\n".join(lines)
 
 func _reload_purge_options() -> void:
@@ -4235,10 +3153,9 @@ func _do_reset() -> void:
 	# and their saved toggle state would be stranded describing data that is gone
 	var maps_before: Array = MapContextScript.cached_maps()
 	var freed: int = await mapctx.purge_everything()
-	# both stores are gone: forget the map-context index and every icon rendered
-	# from it, or the library keeps offering stand-ins for deleted files
+	# both stores are gone: forget the map-context index, or the library keeps
+	# offering stand-ins for deleted files
 	HighpolyStore.ctx_scan(true)
-	if previews: previews.rescan_context()
 
 	# AND DROP THE OPEN READER, which is what made Reset a half-measure.
 	#
@@ -4257,23 +3174,15 @@ func _do_reset() -> void:
 			mapctx.game_source.release_caches()
 		mapctx.game_source = null
 	LibScript.game_source = null
-	LightingScript.game_source = null
 	HighpolyVitals.set_cache_probe(Callable())
 
 	# --- panel back to defaults ---
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
-	if previews: previews.tier = HighpolyLib.Tier.LOW
 	_refresh_gates()      # back on the rung that downloads nothing: grey them again
-	for b in [mapctx_on, mapctx_objects, mapctx_fx, mapctx_light, col_chk,
-			iso_chk, ovr_chk]:
+	for b in [mapctx_on, mapctx_objects, col_chk, iso_chk, ovr_chk]:
 		if b: b.set_pressed_no_signal(false)
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
-	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
-	MapContextScript.show_fx_cards = false
-	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
-	_gm_key = ""
-	_gm_heal_off = ""
 	if ovr_chk: ovr_chk.text = _override_label()
 	_override.clear()
 	# forget the per-map saved state too, or reopening a map restores toggles
@@ -4306,59 +3215,21 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	storage_lbl.text = "Purging %s…" % map
 	await mapctx.purge_map(map, info)
 	# The purge can delete map-context meshes the LIBRARY was being served from
-	# (a name held by only one store is owned by both systems). Re-index, drop the
-	# icons rendered from what is gone, and re-apply so anything that lost its
-	# stand-in falls back to the SDK proxy and queues the real model.
+	# (a name held by only one store is owned by both systems). Re-index and
+	# re-apply so anything that lost its stand-in falls back to the SDK proxy and
+	# queues the real model.
 	HighpolyStore.ctx_scan(true)
-	if previews: previews.rescan_context()
 	if EditorInterface.get_edited_scene_root() != null:
 		await _apply_scene()
 	lbl.text = "%s purged. About %s freed; it rebuilds from your game install on demand." % [map,
 		_human_size(int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)))]
 	_refresh_storage()
 
-# ---------- plugin self-update ----------
-# `announce` makes the outcome visible on the status line - the manual
-# button's press must say something either way, where the silent startup
-# check only reveals the update button when there is one.
-func _check_plugin_update(announce := false) -> void:
-	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
-		if new_version != "" and is_instance_valid(update_btn):
-			update_btn.text = "Update Plugin to v%s" % new_version
-			update_btn.tooltip_text = "A newer version of this plugin is available. One click installs it; restart the editor afterwards."
-			update_btn.visible = true
-		if announce and is_instance_valid(lbl):
-			lbl.text = ("v%s is available - press Update Plugin above" % new_version) \
-				if new_version != "" \
-				else "Plugin is up to date (v%s)" % HighpolyUpdater.plugin_version())
-
-func _do_plugin_update() -> void:
-	update_btn.disabled = true
-	# the updater fetches into memory, so there's no byte stream to track — show
-	# an indeterminate row anyway, so this download isn't the one silent one
-	# the updater fetches into memory, so there is no byte stream to track — it
-	# still takes a turn in the queue so it cannot race a model download
-	var token: int = await jobs.acquire("Plugin update")
-	# RELEASE OUR OWN LOCK FIRST. The panel's video player holds waves.ogv
-	# open, and Windows will not overwrite an open file - the updater's
-	# hash-skip already avoids rewriting an unchanged video, but a release
-	# that DOES change it must not fail on our own player.
-	var _vid_stream = null
-	if video != null and is_instance_valid(video):
-		_vid_stream = video.stream
-		video.stop()
-		video.stream = null
-	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String):
-		lbl.text = msg
-		Log.info(msg))
-	if _vid_stream != null and video != null and is_instance_valid(video):
-		video.stream = _vid_stream
-		_sync_backdrop()
-	jobs.release(token, ok, "" if ok else "see the log for what failed")
-	if ok:
-		update_btn.text = "Restart editor to finish update"
-	else:
-		update_btn.disabled = false
+# EditorPlugin.scene_changed, connected in _enter_tree. The heartbeat still
+# calls _check_scene_change as a backstop; it returns at once when the root
+# has not changed.
+func _on_scene_changed(_root: Node) -> void:
+	_check_scene_change()
 
 # When the user switches scene tabs, tear down our heavy owner=null overlays on
 # the scene we're LEAVING (Map Context = tens of thousands of nodes; high-poly =
@@ -4369,17 +3240,24 @@ func _check_scene_change() -> void:
 	if r == _edited_root: return
 	var old := _edited_root
 	_edited_root = r
+	if is_instance_valid(_preparation):
+		_preparation.refresh_status()
+	# TIMED, CALL BY CALL (OPT-07, measure first). A scene switch froze the
+	# editor for 5.6-30.6 s in the logs, and part of that is Godot instancing the
+	# incoming scene. These lines say how much is the plugin's teardown, so the
+	# fix (hide now, free in slices) can be aimed at the call that costs.
+	var _sw: Array = []
+	var _t_sw := Time.get_ticks_msec()
 	if old != null and is_instance_valid(old):
 		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
-		LightingScript.clear(old)                           # frees _GAME_LIGHTING + _MAP_LIGHTS
-		HighpolyGamemode.clear(old)                         # frees _GAMEMODE markers
-		HighpolyFx.clear(old)                               # frees _MAP_FX particles
+		_sw.append("map context %d ms" % (Time.get_ticks_msec() - _t_sw)); _t_sw = Time.get_ticks_msec()
 		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
+		_sw.append("collision %d ms" % (Time.get_ticks_msec() - _t_sw)); _t_sw = Time.get_ticks_msec()
 		HighpolyLib.restore(old)                              # overlays off, SDK proxies back
+		_sw.append("restore overlays %d ms" % (Time.get_ticks_msec() - _t_sw)); _t_sw = Time.get_ticks_msec()
 	# reset the dock to default for the newly-active scene (programmatic, no rebuild)
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
-	if previews: previews.tier = HighpolyLib.Tier.LOW
 	_refresh_gates()      # the new scene starts on the rung that downloads nothing
 	_override.clear()
 	if ovr_chk:
@@ -4387,21 +3265,13 @@ func _check_scene_change() -> void:
 		ovr_chk.text = _override_label()
 	if mapctx_on: mapctx_on.set_pressed_no_signal(false)
 	if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
-	# the other two map-context layers reset with everything else, or the chips
-	# would claim a skyline and a sea that the new scene has not built
+	# the other map-context layers reset with everything else, or the chips
+	# would claim a skyline that the new scene has not built
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
-	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
 	if mapctx_roads:
 		mapctx_roads.set_pressed_no_signal(false)
 		if mapctx: mapctx.set_roads_shown(null, false)
-	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
-	if mapctx_fx:
-		mapctx_fx.set_pressed_no_signal(false)
-		MapContextScript.show_fx_cards = false   # keep the card layer in step
-	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
-	_gm_key = ""
-	_gm_heal_off = ""
 	if col_chk: col_chk.set_pressed_no_signal(false)
 	if iso_chk:
 		iso_chk.set_pressed_no_signal(false)
@@ -4421,9 +3291,13 @@ func _check_scene_change() -> void:
 	# downstream of a check that already rejected the call. A user's editor log
 	# showed exactly that, three times in a row, on a scene swap.
 	var alive: Node = old if (old != null and is_instance_valid(old)) else null
+	_t_sw = Time.get_ticks_msec()
 	ShapeViz.release(alive)
 	PlacedCull.release(alive)  # a saved property: don't leave it on a closed scene
 	SdkHide.restore_all(alive)
+	_sw.append("outline/cull/SDK-hide walks %d ms" % (Time.get_ticks_msec() - _t_sw))
+	if old != null:
+		Log.info("scene switch teardown: " + ", ".join(PackedStringArray(_sw)))
 	# The one thing that SHOULD carry across a swap: the pieces you placed in the
 	# newly-active scene start culled to wherever the Range slider currently sits.
 	# The cull was released from the outgoing scene but never applied to the
@@ -4434,7 +3308,7 @@ func _check_scene_change() -> void:
 	if lbl and old != null: lbl.text = "Different map opened, so everything is back to Low-Poly"
 	# fresh dock instance (editor start / plugin re-enable) — not a scene
 	# switch: bring the overlay back the way this map had it
-	if old == null and r != null and not _soft_applied:
+	if old == null and r != null:
 		_restore_mapctx_state.call_deferred()
 
 # ensure the map's prop meshes are in the shared cache (only when objects are
@@ -4457,7 +3331,6 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# Nothing to fetch (the usual case once a map has been opened once), or the
 	# context is being switched off: one build, no intermediate state.
 	var bd: bool = mapctx_backdrop != null and mapctx_backdrop.button_pressed
-	var wt: bool = mapctx_water != null and mapctx_water.button_pressed
 	# ONE APPLY, ALWAYS. This used to build the terrain first, fetch the prop
 	# GLBs, then apply again with objects on top - a two-phase dance whose only
 	# purpose was to show something while a download ran. There is no download:
@@ -4471,29 +3344,11 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# silent, so the log cannot distinguish "the build was never reached" from
 	# "the build ran and produced nothing". One line here settles that the next
 	# time it happens instead of needing a reproduction.
-	Log.info("Map context apply: terrain=%s objects=%s backdrop=%s water=%s tex=%d map=%s"
-		% [str(on), str(objs), str(bd), str(wt), tex, map if map != "" else "<none>"])
-	var _res: String = await _apply_with_placements(r, on, objs, tex, bd, wt)
+	Log.info("Map context apply: terrain=%s objects=%s backdrop=%s tex=%d map=%s"
+		% [str(on), str(objs), str(bd), tex, map if map != "" else "<none>"])
+	var _res: String = await _apply_with_placements(r, on, objs, tex, bd)
 	Log.info("Map context apply returned: %s" % (_res if _res != "" else "<empty>"))
 	lbl.text = _res
-
-# Contact shading, Shadows, Map lights and Interior light: the four options that
-# only mean anything while Lighting is on.
-#
-# GREYED, NOT HIDDEN. They used to disappear, and a row that disappears drags
-# every row beneath it upwards — so switching Lighting moved the rest of the
-# panel under the user's cursor, and the next click could land on a control they
-# were not aiming at. Greyed, they stay put and simply stop responding, and the
-# panel keeps the same shape whatever is switched on.
-#
-# ONE FUNCTION because there were EIGHT places setting these four controls, and
-# they had already drifted: two of them forgot Map lights entirely, so it stayed
-# clickable after Lighting went off.
-func _lighting_subs_enabled(on: bool) -> void:
-	if mapctx_gi: mapctx_gi.disabled = not on
-	if mapctx_shadows: mapctx_shadows.disabled = not on
-	if mapctx_maplights: mapctx_maplights.disabled = not on
-	if mapctx_fill: mapctx_fill.editable = on
 
 
 # Is anything that draws the MAP switched on?
@@ -4506,21 +3361,15 @@ func _wants_map_layers() -> bool:
 	# itself is deliberately NOT in this list: the ground is the streaming
 	# tree, the palette and the colour map, and its texture names resolve
 	# through the partition catalogue that build_catalog makes regardless -
-	# the walk's 38k rows feed props, skyline, lights and FX, none of which
-	# terrain reads. The master chip used to be the last line here, which
+	# the walk's 38k rows feed props and skyline, neither of which terrain
+	# reads. The master chip used to be the last line here, which
 	# made switching terrain on pay the ~50 s cold walk for data nothing
 	# consumed (found by asking exactly that of the build journal). A layer
 	# turned on later still gets its rows: every consumer runs
 	# _ensure_placements_async first.
 	if mapctx_objects != null and mapctx_objects.button_pressed:
 		return true
-	if mapctx_backdrop != null and mapctx_backdrop.button_pressed:
-		return true
-	if mapctx_water != null and mapctx_water.button_pressed:
-		return true
-	if mapctx_light != null and mapctx_light.button_pressed:
-		return true
-	return mapctx_fx != null and mapctx_fx.button_pressed
+	return mapctx_backdrop != null and mapctx_backdrop.button_pressed
 
 
 # Walk the level's placements if a map layer needs them and the open skipped it.
@@ -4598,14 +3447,9 @@ func _mapctx_rebuild() -> void:
 	if not mapctx_on.button_pressed: return
 	var r := EditorInterface.get_edited_scene_root()
 	if mapctx.map_of(r) == "": return
-	# Which optional map data to mine. The light and FX layers have their own
-	# buttons and apply() never saw them, so every apply mined 3,874 light
-	# entities and 701 FX emitters whether or not anything would draw them.
-	_mapctx_sync_wants()
 	lbl.text = await _apply_with_placements(r, true, mapctx_objects.button_pressed,
 		_mapctx_tex_mode(),
-		mapctx_backdrop != null and mapctx_backdrop.button_pressed,
-		mapctx_water != null and mapctx_water.button_pressed)
+		mapctx_backdrop != null and mapctx_backdrop.button_pressed)
 
 
 # THE ONLY WAY THE MAP CONTEXT IS APPLIED, so the placement walk cannot be
@@ -4620,7 +3464,7 @@ func _mapctx_rebuild() -> void:
 # Guarding each caller is what produced that bug, so there is one chokepoint now
 # and both callers go through it. ensure_placements returns immediately when the
 # walk has already run, so this costs nothing on the common path.
-func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bool) -> String:
+func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool) -> String:
 	# GATED ON WHAT CONSUMES THE WALK, which is the objects and the skyline.
 	#
 	# This read `if on`, and `on` is the flag the log prints as "terrain". A user
@@ -4648,18 +3492,15 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bo
 			and not mapctx.game_source.placements_ready:
 		await _ensure_placements_async(mapctx.game_source)
 	# THE MAP DATA TOO, for the same reason and with the same gate apply uses
-	# (need_data = terrain or objects or backdrop or water). apply() calls
+	# (need_data = terrain or objects or backdrop). apply() calls
 	# map_data on the MAIN thread, and the first ask decodes the heightfield,
 	# drapes the roads and mines any wanted section - the 35-44 s freezes the
 	# stall table blamed on "idle" (task #91). Mining it here on a worker turns
-	# apply's own call into a dictionary return. The want dict must be the one
-	# apply will pass, or apply's ask still lazily fills the difference on the
-	# main thread - which is why the wants are synced first.
-	if (on or objs or bd or wt) and mapctx != null and mapctx.game_source != null:
-		_mapctx_sync_wants()
-		await _ensure_mapdata_async(mapctx.game_source,
-			{"lights": mapctx.want_lights, "fx": mapctx.want_fx, "water": wt})
-	return mapctx.apply(r, on, objs, tex, bd, wt)
+	# apply's own call into a dictionary return. The decal volumes are left to
+	# apply, which asks for them only when the objects layer is on.
+	if (on or objs or bd) and mapctx != null and mapctx.game_source != null:
+		await _ensure_mapdata_async(mapctx.game_source, {"edv": false})
+	return mapctx.apply(r, on, objs, tex, bd)
 
 
 # ONE READ WORKER AT A TIME, whichever layer asked for it.
@@ -4774,66 +3615,6 @@ func _ensure_mapdata_async(gs, want: Dictionary) -> void:
 	_read_worker_busy = false
 
 
-
-# The dock owns these two buttons; the map context cannot see them. Kept in one
-# place so a new caller cannot forget half of it.
-func _mapctx_sync_wants() -> void:
-	if mapctx == null:
-		return
-	mapctx.want_lights = mapctx_maplights != null and mapctx_maplights.button_pressed
-	mapctx.want_fx = mapctx_fx != null and mapctx_fx.button_pressed
-
-# "Game lighting": inject/remove the real map sun+sky+fog (highpoly_lighting.gd).
-# Independent of the Map Context download (no map data needed — compiled-in table).
-func _lighting_changed() -> void:
-	var r := EditorInterface.get_edited_scene_root()
-	var map: String = mapctx.map_of(r)
-	if not mapctx_light.button_pressed:
-		LightingScript.clear(r)
-		lbl.text = "Game lighting off"
-		return
-	# Lighting no longer has a compiled per-map table to fall back to. If this is
-	# the first live layer the user switches on, open the game's reader here so
-	# the checkbox does not depend on Extended Terrain having run first.
-	if map != "" and (LightingScript.game_source == null \
-			or str(LightingScript.game_source.level) != map.to_lower()):
-		lbl.text = "Reading %s lighting from the Battlefield 6 install..." % map
-		await _ensure_game_source(map)
-	if map == "" or not LightingScript.has_data(map):
-		mapctx_light.set_pressed_no_signal(false)
-		_lighting_subs_enabled(false)
-		lbl.text = "No lighting data for this scene" if map != "" else "Open an MP_… level scene first"
-		return
-	lbl.text = LightingScript.apply(r, map,
-			mapctx_gi.button_pressed if mapctx_gi else true,
-			mapctx_shadows.button_pressed if mapctx_shadows else true)
-	if mapctx_maplights and mapctx_maplights.button_pressed:
-		lbl.text += " | " + await LightingScript.set_map_lights(r, true, map,
-			_lane(LIGHTS_JOB))
-
-# grey the checkbox out when the open scene has no lighting data (called from
-# the dock's 0.5 s timer — cheap: one dictionary lookup)
-func _lighting_guard() -> void:
-	# Video memory used to ride along with the Lighting sub-controls, which meant
-	# it was INVISIBLE until somebody switched Lighting on. It is a scenery
-	# setting, nothing to do with lighting, and it is the one control the
-	# out-of-memory warning tells people to change — so it was pointing them at
-	# something they could not see. It is simply always there now.
-	if mapctx_light == null: return
-	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
-	var source_ready := LightingScript.game_source != null \
-		and str(LightingScript.game_source.level) == map.to_lower()
-	var ok := map != "" and (LightingScript.has_data(map) \
-		or (not source_ready and HighpolyGameSource.available()))
-	if mapctx_light.disabled == (not ok): return
-	mapctx_light.disabled = not ok
-	# Say so ON THE CHIP. The status-line message for this lives in the click
-	# handler, which a disabled chip never reaches.
-	mapctx_light.tooltip_text = LIGHTING_TIP if ok else LIGHTING_TIP_NONE
-	if not ok and mapctx_light.button_pressed:
-		mapctx_light.set_pressed_no_signal(false)
-		_lighting_subs_enabled(false)
-
 # one-time baked-in performance settings: multi-threaded rendering (zero
 # visual impact) + 2048 shadow atlas (negligible under the soft overcast sun).
 # Applied ONCE per project — a user who reverts a setting is respected.
@@ -4881,7 +3662,7 @@ func _auto_perf_settings() -> void:
 		banner.visible = true
 
 # ---------- Configure Shaders dialog ----------
-# Water Animation / Flipbook Animations / Foliage Wind — live uniforms on the
+# Foliage Wind — live uniforms on the
 # overlay's shader materials (no rebuild), persisted project-wide.
 func _open_shader_dialog() -> void:
 	var d: Dictionary = HighpolyMapContext.shader_prefs
@@ -4896,38 +3677,6 @@ func _open_shader_dialog() -> void:
 		EditorInterface.get_editor_settings().set_project_metadata(
 				"highpoly_mapctx", "_shaders", HighpolyMapContext.shader_prefs)
 		lbl.text = mapctx.apply_shader_prefs(EditorInterface.get_edited_scene_root())
-
-	var w_lbl := Label.new(); w_lbl.text = "Water Animation"
-	box.add_child(w_lbl)
-	var w_row := HBoxContainer.new(); box.add_child(w_row)
-	var w_sl := HSlider.new()
-	w_sl.min_value = 0.0; w_sl.max_value = 2.0; w_sl.step = 0.05
-	w_sl.value = float(d.get("water", 1.0))
-	w_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	w_sl.tooltip_text = "How fast the water ripples. 0 is completely still; 1 is the speed the real game uses."
-	w_row.add_child(w_sl)
-	var w_val := Label.new(); w_val.text = "×%.2f" % w_sl.value
-	w_row.add_child(w_val)
-	w_sl.value_changed.connect(func(v: float):
-		HighpolyMapContext.shader_prefs["water"] = v
-		w_val.text = "×%.2f" % v
-		apply.call())
-
-	var f_lbl := Label.new(); f_lbl.text = "Flipbook Animations"
-	box.add_child(f_lbl)
-	var f_row := HBoxContainer.new(); box.add_child(f_row)
-	var f_sl := HSlider.new()
-	f_sl.min_value = 0.0; f_sl.max_value = 2.0; f_sl.step = 0.05
-	f_sl.value = float(d.get("flip", 1.0))
-	f_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	f_sl.tooltip_text = "How fast the distant smoke plumes billow. 0 freezes them still."
-	f_row.add_child(f_sl)
-	var f_val := Label.new(); f_val.text = "×%.2f" % f_sl.value
-	f_row.add_child(f_val)
-	f_sl.value_changed.connect(func(v: float):
-		HighpolyMapContext.shader_prefs["flip"] = v
-		f_val.text = "×%.2f" % v
-		apply.call())
 
 	var wind_chk := CheckBox.new()
 	wind_chk.text = "Foliage Wind"
@@ -4958,51 +3707,36 @@ func _open_shader_dialog() -> void:
 	dlg.canceled.connect(func(): dlg.queue_free())
 	EditorInterface.popup_dialog_centered(dlg)
 
-# populate/show the gamemode Variant dropdown while objects are on (only for
-# maps that have gamemode_markers.json); hiding it clears the overlay
+# The Variant dropdown shows a layer of the map's own objects (the carriers on
+# Tsuru Reef, a mode's props). It never adds gameplay nodes: the fork removed
+# the game-mode builder, which put capture points, HQs and spawns into the
+# user's scene and rebuilt them when deleted.
+func _select_variant(layer: String) -> void:
+	if mapctx == null:
+		return
+	lbl.text = mapctx.set_variant_layers("" if layer == "Off" else layer)
+	_save_mapctx_state()
+
+# populate/show the Variant dropdown while objects are on: it lists the map's
+# own object layers, discovered from the subworlds the placements came out of
+# (winter_event, rush, domination, the Tsuru Reef carriers, ...)
 func _variant_row_update(objects_on: bool) -> void:
 	if mapctx_variant_row == null: return
-	var r := EditorInterface.get_edited_scene_root()
-	# THE MAP'S OWN LAYERS, when there is no mined mode file.
-	#
-	# This asked HighpolyGamemode.modes(), which reads gamemode_markers.json -
-	# written by a miner that no longer exists. The list came back empty on
-	# every map, so `show` was always false and the whole row was HIDDEN. Not
-	# greyed out, not empty: absent. Which is why the game mode could not be
-	# selected at all.
-	#
-	# The layers are discovered from the subworlds the placements came out of,
-	# so the map can list its own: winter_event, rush, domination, sabotage and
-	# the rest. When the marker file does come back it wins, because it also
-	# carries the spawns and objectives this cannot.
-	var mds: Array = HighpolyGamemode.modes(mapctx.map_of(r)) if objects_on else []
-	var mined := not mds.is_empty()
-	if objects_on and mds.is_empty():
-		mds = mapctx.available_layers()
-	var show := objects_on and not mds.is_empty()
+	var mds: Array = mapctx.available_layers() if objects_on else []
+	var show := not mds.is_empty()
 	mapctx_variant_row.visible = show
 	if not show:
-		HighpolyGamemode.clear(r)
 		return
 	var cur := mapctx_variant.get_item_text(mapctx_variant.selected) \
 			if mapctx_variant.selected >= 0 else "Off"
 	mapctx_variant.clear()
 	mapctx_variant.add_item("Off")
 	for m in mds:
-		# mined modes get the name people use ("Team Deathmatch"); the layer-name
-		# fallback is left alone, because those ARE the layer's own spelling and
-		# set_variant_layers matches on it
-		mapctx_variant.add_item(HighpolyGamemode.pretty(str(m)) if mined else str(m))
+		mapctx_variant.add_item(str(m))
 	for i in range(mapctx_variant.item_count):
 		if mapctx_variant.get_item_text(i) == cur:
 			mapctx_variant.select(i)
 			break
-	# the row was just repopulated, so the cached key and the "cannot build"
-	# latch both belong to the previous map's list
-	_gm_key = HighpolyGamemode.key_for(mapctx.map_of(r), r,
-		mapctx_variant.get_item_text(mapctx_variant.selected)) \
-		if mapctx_variant.selected > 0 else ""
-	_gm_heal_off = ""
 
 # remember the overlay setup per map so a plugin/editor restart brings it
 # back automatically (see _restore_mapctx_state) instead of the user
@@ -5015,7 +3749,6 @@ func _save_mapctx_state() -> void:
 		"on": mapctx_on.button_pressed,
 		"objects": mapctx_objects.button_pressed,
 		"backdrop": mapctx_backdrop.button_pressed if mapctx_backdrop else false,
-		"water": mapctx_water.button_pressed if mapctx_water else false,
 		# defaults FALSE on read, like every other layer chip: a saved state from
 		# before this chip existed restores with the streets off, same as any
 		# layer you have not asked for.
@@ -5024,15 +3757,12 @@ func _save_mapctx_state() -> void:
 		"range": mapctx_range.value if mapctx_range else RANGE_DEFAULT,
 		"no_cull": mapctx_nocull.button_pressed if mapctx_nocull else false,
 		"maptile": false,      # the SDK plugin owns the ground texture now
-		"light": mapctx_light.button_pressed if mapctx_light else false,
-		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
-		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
-		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
-		"proplight": prop_light_on.button_pressed if prop_light_on else false,
-		"fill": mapctx_fill.value if mapctx_fill else 0.0,
+		# No lighting or FX keys: those switches are gone (fork F-08). A state
+		# saved by an older build may still carry them (light, gi, shadows,
+		# maplights, proplight, fill, fx); nothing reads them, and this write
+		# replaces the whole entry, so they drop out on the next save.
 		"photo": mapctx_photo.value if mapctx_photo else 75.0,
 		"optimize": true,      # always on: it is what the Range slider means
-		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
 				if mapctx_variant and mapctx_variant.selected >= 0 else "Off",
 		# The RAW dropdown id, not _mapctx_tex_mode(). They were the same thing
@@ -5045,7 +3775,7 @@ func _save_mapctx_state() -> void:
 	})
 
 # Plugin/editor START only (not scene switches): put the overlay back the way
-# this map had it — checkboxes, range, lighting, detail mode — and kick the
+# this map had it — checkboxes, range, detail mode — and kick the
 # normal background build. Updated models flow in via the standard staleness
 # checks (registry refresh + GLB mtime vs sidecar), i.e. "Check for updates"
 # semantics without the clicks.
@@ -5056,19 +3786,6 @@ func _save_mapctx_state() -> void:
 # everything, high-poly models included.
 func _restore_mapctx_state() -> void:
 	var r := EditorInterface.get_edited_scene_root()
-	# A SOFT REOPEN LEFT EVERYTHING STANDING. The sweep below exists because an
-	# ordinary plugin reload orphans our owner=null overlays, and there is nothing
-	# orphaned here: the same map context node, the same FX, the same lighting rig,
-	# still owned by the service that built them and handed across intact. Sweeping
-	# them would destroy exactly what the soft reopen exists to keep.
-	var soft := _soft_restore
-	_soft_restore = false
-	if r != null and not soft:
-		# plugin reloads orphan our owner=null overlay nodes ("FX won't
-		# despawn") — sweep them all before restoring the saved state
-		HighpolyFx.clear(r)
-		HighpolyGamemode.clear(r)
-		LightingScript.clear(r)
 	var map: String = mapctx.map_of(r)
 	if map == "": return
 	# A BOOT STARTS CLEAN. Godot reopens whatever scene was last edited, and
@@ -5077,30 +3794,13 @@ func _restore_mapctx_state() -> void:
 	# fought a build already in flight and the editor locked up hard.
 	#
 	# The restore now only re-syncs the CHIPS to an overlay that is ALREADY
-	# BUILT. That is the soft-reopen case (a plugin reload or the cold swap,
-	# where the owner=null overlay nodes survive in the scene and the chips
-	# would otherwise read "off" over visible terrain). A real boot has no
+	# BUILT, where owner=null overlay nodes survived in the scene and the chips
+	# would otherwise read "off" over visible terrain. (The fork has no live
+	# reload or soft reopen any more, F-03, so this is rare.) A real boot has no
 	# overlay, so everything stays off and nothing is applied until asked.
 	# The saved entry is left alone rather than cleared: nothing else reads it,
 	# and the next deliberate toggle rewrites it anyway.
-	#
-	# EXCEPT AFTER A SWAP THAT CHANGED WHAT BUILDS THE SCENERY. The standing
-	# overlay's materials and meshes came out of the code the swap just
-	# replaced, so re-syncing chips to it shows the OLD look and reads as the
-	# update doing nothing (the truckpickup wheels stayed shredded through the
-	# very update that fixed them). Tear the stale overlay down first; the
-	# restore below then rebuilds it through the normal path, with the new
-	# code and fresh material caches. One rebuild per code-that-builds update,
-	# only when scenery is actually standing.
-	var _stale_swap := _swap_impact != "" and _swap_impact != "code" \
-		and _swap_impact != "none"
-	_swap_impact = ""
-	if _stale_swap and r.get_node_or_null(HighpolyMapContext.NODE) != null \
-			and mapctx != null:
-		Log.info("Rebuilding the map context: the update replaced the code "
-			+ "that built what is on screen.")
-		mapctx.apply(r, false, false, false)
-	elif r.get_node_or_null(HighpolyMapContext.NODE) == null:
+	if r.get_node_or_null(HighpolyMapContext.NODE) == null:
 		return
 	var st: Variant = EditorInterface.get_editor_settings().get_project_metadata(
 			"highpoly_mapctx", map, {})
@@ -5140,8 +3840,6 @@ func _restore_mapctx_state() -> void:
 	# something you ask for rather than something that arrives with the map.
 	if mapctx_backdrop:
 		mapctx_backdrop.set_pressed_no_signal(bool(d.get("backdrop", false)))
-	if mapctx_water:
-		mapctx_water.set_pressed_no_signal(bool(d.get("water", false)))
 	# Pushed into the map context by hand: set_pressed_no_signal skips the
 	# handler, so without this the chip and the built node could disagree.
 	# ROADS ARE ALWAYS SHOWN NOW, and this has to be pushed rather than left to
@@ -5164,52 +3862,17 @@ func _restore_mapctx_state() -> void:
 		var _gr_on := bool(d.get("grass", false))
 		mapctx_grass.set_pressed_no_signal(_gr_on)
 		if mapctx: mapctx.set_grass(_gr_on)
-	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))
-	if mapctx_shadows: mapctx_shadows.set_pressed_no_signal(bool(d.get("shadows", true)))
-	if mapctx_maplights: mapctx_maplights.set_pressed_no_signal(bool(d.get("maplights", false)))
-	# set_pressed_no_signal SKIPS the handler, so the switch has to be applied by
-	# hand or the statics and the chip disagree. That is what left a rebooted
-	# scene showing lit fixtures under a chip that read "off".
-	if prop_light_on:
-		var _pl := bool(d.get("proplight", false))
-		prop_light_on.set_pressed_no_signal(_pl)
-		_set_prop_lighting(_pl)
-	# set_pressed_no_signal skips the handler, so the card layer has to be told
-	# separately — otherwise a restore leaves the statics saying "off" while the
-	# chip reads on (or vice versa) and the next build guesses wrong.
-	if mapctx_fx:
-		MapContextScript.show_fx_cards = bool(d.get("fx", false))
-	if mapctx_fx and bool(d.get("fx", false)):
-		mapctx_fx.set_pressed_no_signal(true)
-		mapctx.set_fx_cards_shown(r, true)
-		lbl.text = await HighpolyFx.apply(r, map, true, _lane(FX_JOB),
-			mapctx.game_source)
-	# The FX apply above yields. A scene closed during it leaves `r` freed, and
-	# everything below still hands it to typed `root: Node` parameters, which
-	# fail at the call rather than inside.
-	if not is_instance_valid(r):
-		return
-	if bool(d.get("light", false)) and mapctx_light != null:
-		mapctx_light.set_pressed_no_signal(true)
-		_lighting_subs_enabled(true)
-		# restore the interior fill BEFORE the rig is built, so apply() reads the
-		# saved value rather than the static default and the view does not flash
-		# at 22% on the way to whatever the user actually chose
-		if mapctx_fill:
-			var fv: float = float(d.get("fill", mapctx_fill.value))
-			mapctx_fill.set_value_no_signal(fv)
-			if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fv)
-			LightingScript.interior_fill = clampf(fv / 100.0, 0.0, 1.0)
-		_lighting_changed()
-	# gamemode variant overlay (dropdown lives under "Original map objects")
+	# The Lighting, FX and Prop Lighting keys an older save may carry are not
+	# read: those switches are gone, and the editor's own preview light stays
+	# in charge.
+	# variant layers (dropdown lives under "Original map objects")
 	_variant_row_update(bool(d.get("objects", false)))
 	var _sv := str(d.get("variant", "Off"))
 	if _sv != "Off" and mapctx_variant_row != null and mapctx_variant_row.visible:
 		for i in range(mapctx_variant.item_count):
 			if mapctx_variant.get_item_text(i) == _sv:
 				mapctx_variant.select(i)
-				lbl.text = HighpolyGamemode.apply(r, map, _sv, mapctx)
-				mapctx.set_variant_layers(_sv)
+				_select_variant(_sv)
 				break
 	# the Ground photo strength, BEFORE the apply below builds the terrain
 	# material, so the build binds the saved value rather than the default
@@ -5231,22 +3894,13 @@ func _restore_mapctx_state() -> void:
 	# where that combination lives now. Nothing is re-downloaded; it is the same
 	# cache, re-labelled.
 	if saved_tex == MODE_SDK and (bool(d.get("on", false)) or bool(d.get("objects", false)) \
-			or bool(d.get("backdrop", false)) or bool(d.get("water", false)) \
-			or bool(d.get("light", false)) or bool(d.get("fx", false))):
+			or bool(d.get("backdrop", false))):
 		saved_tex = MODE_LIGHT
 	if mode_btn != null and saved_tex != mode_btn.get_selected_id():
 		mode_btn.select(mode_btn.get_item_index(saved_tex))
-		if soft:
-			# The controls now describe what is already on screen, which is all a
-			# soft reopen needed. Building would tear down the scenery and put
-			# back a copy of it.
-			_refresh_gates()
-			return
 		_mode_changed()          # re-applies the library AND rebuilds the overlay
-	elif not soft:
-		_mapctx_changed()
 	else:
-		_refresh_gates()
+		_mapctx_changed()
 
 # OPEN THE GAME SOURCE, wherever the need arises.
 #
@@ -5268,7 +3922,7 @@ func _restore_mapctx_state() -> void:
 #
 # The three early exits in _ensure_game_source all used to just answer "yes,
 # there is one" and return. That is true and not enough: the assignments that
-# hand the reader to the object library and the lighting live at the BOTTOM of
+# hand the reader to the object library live at the BOTTOM of
 # the function, so a caller that took an early exit left those pointing at
 # whatever was there before - the previous map's reader, on a map switch. The
 # library then answered every "what does this prop look like" from the wrong
@@ -5279,7 +3933,6 @@ func _adopt_open_source(map: String) -> bool:
 	if str(mapctx.game_source.level) != map.to_lower():
 		return false
 	LibScript.game_source = mapctx.game_source
-	LightingScript.game_source = mapctx.game_source
 	return true
 
 
@@ -5419,7 +4072,6 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# The object library reads from the same source: a placed object is
 	# assembled from the game's own prefab instead of a fetched GLB.
 	LibScript.game_source = gs
-	LightingScript.game_source = gs   # the level's own sky panorama
 	# THE PLACEABLE CATALOGUE, AFTER THE MAP IS USABLE, not in front of it.
 	#
 	# It is 85 s cold, it covers objects from OTHER levels, and this map does not
@@ -5427,86 +4079,8 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# what made a first open take three and a half minutes before anything could
 	# be drawn. Added on a worker instead, additively, so the map is on screen
 	# and being worked on while it lands.
-	# MINE FIRST, THEN THE CATALOGUE, one after the other rather than both at
-	# once. These were started back to back and neither was awaited, so both ran
-	# on workers at the same time - and the catalogue sweep INSERTS into
-	# gs.src.ebx while the mine iterates it. Growing a Dictionary under another
-	# thread's iterator is not something to leave to luck, and when the mine died
-	# of it there was nothing to see: the failure is silent (see below).
-	#
-	# The mine takes about 3 s and only needs this level's partitions, which the
-	# level mount already has; the catalogue is 85 s cold and is for OTHER
-	# levels' objects. Running the short one first costs the long one nothing.
-	_gamemodes_then_catalogue(gs, map)
-	return true
-
-
-func _gamemodes_then_catalogue(gs, map: String) -> void:
-	await _mine_gamemodes_async(gs, map)
 	_upgrade_catalogue_async(gs)
-
-
-# THE MODE MARKERS, mined from the install on a worker.
-#
-# highpoly_gamemode.gd has always been able to draw capture zones, objectives
-# and spawns; it needed gamemode_markers.json, from a miner that no longer
-# exists. HighpolyGmMine rebuilds that file from the game. 7 s on MP_Aftermath,
-# so it goes on a worker rather than in front of the map.
-#
-# Only when there is nothing usable on disk: the file is derived from the
-# install and does not go stale between sessions, so re-mining on every open
-# would spend those seconds for nothing.
-#
-# "Usable" is not the same as "present". The first version of this file held an
-# origin per marker and nothing else, which is all the orb overlay needed;
-# rebuilding real Portal objects needs polygons, extents and facings, so an old
-# file has to be re-mined rather than read. Testing only for existence would
-# leave anyone who ran the previous version with a file that can never build
-# anything and no way to notice.
-func _mine_gamemodes_async(gs, map: String) -> void:
-	if gs == null or map == "":
-		return
-	if HighpolyGamemode.usable(map):
-		return
-	# The one read that has to touch gs.src.ebx, taken here on the main thread
-	# so the worker never iterates a Dictionary anything else might grow.
-	var roots: Array = HighpolyGmMine.roots_of(gs, str(gs.level))
-	if roots.is_empty():
-		HighpolyLog.warn("gamemode markers: %s has no _layers_gameplay partitions "
-			% map + "in the mount, so there are no modes to mine")
-		return
-	var done := [false]
-	var n := [0]
-	var tid := WorkerThreadPool.add_task(func() -> void:
-		n[0] = HighpolyGmMine.mine_to_disk(gs, str(gs.level), map, roots)
-		done[0] = true, true, "bf6 gamemode markers")
-	# A FAILED WORKER USED TO HANG HERE FOREVER, SILENTLY.
-	#
-	# done[0] is set by the last line of the task, so a GDScript error anywhere
-	# inside it leaves the flag false and this loop awaiting frames for the rest
-	# of the session: no file, no dropdown, no warning, nothing in the log to
-	# say the mine had even been attempted. That is what "users are not getting
-	# gamemode data" looked like. Bounded now, and it says so.
-	var t0 := Time.get_ticks_msec()
-	while not done[0]:
-		if get_tree() == null:
-			return
-		if Time.get_ticks_msec() - t0 > MINE_TIMEOUT_MS:
-			HighpolyLog.warn(("gamemode markers: the miner did not finish within "
-				+ "%d s and has been given up on. No modes will be offered for %s. "
-				+ "This means the worker stopped early - the Output panel will "
-				+ "carry the script error.") % [MINE_TIMEOUT_MS / 1000, map])
-			return
-		await get_tree().process_frame
-	WorkerThreadPool.wait_for_task_completion(tid)
-	if n[0] > 0:
-		# The dropdown lists what this just produced, so it has to be asked
-		# again - the same timing mistake that kept the row hidden before.
-		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
-	else:
-		HighpolyLog.warn("gamemode markers: nothing mined for %s from %d gameplay "
-			% [map, roots.size()] + "partition(s), so the Variant list stays empty")
-	return
+	return true
 
 
 # Runs the catalogue sweep off the main thread and refreshes what depends on it.
@@ -5548,10 +4122,8 @@ func _upgrade_catalogue_async(gs) -> void:
 	HighpolyVitals.crumb("idle, nothing building")
 	if not gs.catalogue_ready:
 		return
-	# Icons and placed objects that could not resolve from the level's archives
-	# alone can resolve now, and nothing may keep the old answer.
-	if previews != null:
-		previews.clear_cache()
+	# Placed objects that could not resolve from the level's archives alone can
+	# resolve now.
 	Log.info("the placeable catalogue is ready: objects from other maps can be "
 		+ "drawn now")
 
@@ -5577,13 +4149,15 @@ func _mapctx_changed() -> void:
 			+ "building the map layers.")
 		await _await_flag("swapping placed objects",
 			func(): return _swap_busy)
+	if mapctx_on.button_pressed or mapctx_objects.button_pressed \
+			or (mapctx_backdrop != null and mapctx_backdrop.button_pressed):
+		await _auto_cache_open_map()
 	_save_mapctx_state()
 	_mapctx_gen += 1
 	var gen := _mapctx_gen
 	var on := mapctx_on.button_pressed
 	var objs := mapctx_objects.button_pressed
 	var bd := mapctx_backdrop != null and mapctx_backdrop.button_pressed
-	var wt := mapctx_water != null and mapctx_water.button_pressed
 	var tex := _mapctx_tex_mode()
 	var r := EditorInterface.get_edited_scene_root()
 	var rn := "<none>" if r == null else String(r.name)
@@ -5592,7 +4166,7 @@ func _mapctx_changed() -> void:
 	# Backdrops on with the terrain and objects off fell into the branch below,
 	# which applies with backdrop=false and returns, so the toggle did nothing
 	# unless Extended Terrain happened to be on as well.
-	if not on and not objs and not bd and not wt:
+	if not on and not objs and not bd:
 		# no layer wanted at all. Textures can still drape the SDK's shipped
 		# maptile over the default terrain (no download needed)
 		lbl.text = mapctx.apply(r, false, false, tex); return
@@ -5672,6 +4246,29 @@ func _mapctx_changed() -> void:
 # point of the override, and gating on the scene mode meant it opened nothing,
 # resolved nothing and drew nothing - the one mode where the preview is the only
 # way to see a real model was the one mode where it could not work.
+# THE OPT-IN AUTO-CACHE (default off). When it is on and the open map is not
+# cached, cache it first and let the build that follows read the fresh index -
+# rather than run the worker and an in-editor cold read of the same map side by
+# side. With it off nothing waits: the map simply builds cold.
+func _auto_cache_open_map() -> void:
+	if not is_instance_valid(_preparation) or not _bf6_ok:
+		return
+	if not _preparation.auto_chk.button_pressed or not _ctx_allowed():
+		return
+	var level: String = _preparation._open_level()
+	if level == "" or _preparation.is_level_cached(level):
+		return
+	if not _preparation.is_running():
+		if not _preparation.cache_level(level):
+			return
+		Log.info("auto-cache: caching %s before the High-Poly build" % level)
+	var t0 := Time.get_ticks_msec()
+	while is_instance_valid(_preparation) and _preparation.is_running() \
+			and dock != null and dock.is_inside_tree():
+		await dock.get_tree().process_frame
+	Log.info("auto-cache: waited %.1f s for %s" % [(Time.get_ticks_msec() - t0) / 1000.0, level])
+
+
 func _ensure_source_for_mode(force := false) -> void:
 	if not force and _mode() == HighpolyLib.Tier.LOW:
 		return                       # the SDK's own proxies need nothing from us
@@ -5737,12 +4334,11 @@ func _mode_changed() -> void:
 	if ovr_chk:
 		ovr_chk.set_pressed_no_signal(false)
 		ovr_chk.text = _override_label()
-	previews.tier = _mode()
-	previews.textured = _textured()
 	# BEFORE _apply_scene, not after: the apply is what asks the library for a
 	# model per prop, and with no game source open every one of those asks
 	# returns nothing. Awaiting here means the first switch to High-Poly in a
 	# session pays the read once and then actually swaps.
+	await _auto_cache_open_map()
 	await _ensure_source_for_mode()
 	# SAID, AND GIVEN A FRAME TO BE SEEN, before the swap starts. HighpolyLib
 	# .apply walks the whole scene and builds an overlay per prop in one
@@ -5818,6 +4414,7 @@ func _apply_scene() -> void:
 	_swap_gen += 1
 	var gen := _swap_gen
 	_swap_busy = true
+	HighpolyVitals.job_begin("swapping placed objects")
 	# WHO IS SWAPPING, AND IS ANYONE ELSE. Two passes over the same scene
 	# nodes, interleaved across their yields, would both be freeing and
 	# re-adding the same children - and the four layers that crash all die
@@ -5843,8 +4440,10 @@ func _apply_scene() -> void:
 		# scene is live in between.
 		if not is_instance_valid(pair[0]):
 			continue
+		var t_item := Time.get_ticks_msec()
 		if HighpolyLib.apply_one(pair[0] as Node3D, str(pair[1]), tier, tex):
 			n += 1
+		HighpolyVitals.report_slow(str(pair[1]), Time.get_ticks_msec() - t_item)
 		if tree == null or Time.get_ticks_msec() - slice_t0 < budget:
 			continue
 		lane.call(i + 1, total)
@@ -5853,6 +4452,7 @@ func _apply_scene() -> void:
 		await tree.process_frame
 		if gen != _swap_gen or EditorInterface.get_edited_scene_root() != r:
 			lane.call(total, total)        # close the bar, leave the rest to the newer pass
+			HighpolyVitals.job_end("swapping placed objects")
 			if gen == _swap_gen:
 				_swap_busy = false
 			if OS.get_environment("BF6_MESH_TRACE") == "1":
@@ -5864,6 +4464,7 @@ func _apply_scene() -> void:
 		budget = clampi((Time.get_ticks_msec() - y0) * 4, 250, 2000)
 		slice_t0 = Time.get_ticks_msec()
 	lane.call(total, total)
+	HighpolyVitals.job_end("swapping placed objects")
 	_swap_busy = false
 	if OS.get_environment("BF6_MESH_TRACE") == "1":
 		_swap_live -= 1
@@ -5946,86 +4547,7 @@ func _reoverride_selection() -> void:
 # destroyed shells, …) cycles base -> variants -> base instead — doors always
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
-var prop_light_on: Button = null
 var _said_not_map := ""              # scene we have already explained is not a map
-
-
-# Object library icons, rendered as the last stage of the up-front cache. The
-# supervisor owns the screen and progress; this supplies the renderer, which needs
-# the install open in the icon's detail mode.
-func _previews_missing_for_cache() -> int:
-	return previews.missing_count() if previews != null else 0
-
-func _run_previews_for_cache(progress: Callable) -> Dictionary:
-	BJournal.event("ui", "cache: object previews")
-	if previews == null:
-		return {"total": 0, "rendered": 0, "cancelled": false}
-	if previews.building:
-		return {"error": "a preview build is already running"}
-	await _ensure_source_for_mode(true)
-	if previews == null:
-		return {"error": "the preview renderer closed"}
-	var res: Dictionary = await previews.build_all(progress)
-	if not res.has("error"):
-		HighpolyLog.info(("Object previews: %d rendered, %d already cached, %d have nothing "
-			+ "to draw them from - %.1f s%s") % [int(res["rendered"]),
-			int(res["already_cached"]), int(res["no_source"]), float(res["seconds"]),
-			"  (stopped early)" if bool(res["cancelled"]) else ""])
-	return res
-
-func _cancel_previews_for_cache() -> void:
-	if previews != null and previews.building:
-		previews.cancel_build = true
-
-
-# ONE SWITCH, BOTH HALVES. The fixtures are Light3D children of each overlay and
-# only need showing; the glow is an emission multiplier baked into the materials,
-# so that half needs the materials rebuilding. Doing only one of the two would
-# leave a lamp casting light with a dark bulb, or a bright bulb lighting nothing.
-func _set_prop_lighting(on: bool) -> void:
-	# STATICS ARE SET THROUGH THE PRELOAD CONST, never through the class_name.
-	# After an in-place reload the two are different script objects and the
-	# assignment lands on the wrong one, which is a bug this plugin has already
-	# paid for once.
-	LightingScript.prop_lighting = on
-	# OFF MEANS OFF, not "as authored". The first version set this to 1.0 when
-	# switched off, which draws the lit sheet at the strength the artist gave it -
-	# and a lamp's lit sheet is a lit sheet, so every bulb still glowed. A switch
-	# labelled Prop Lighting that leaves the bulbs on is just wrong.
-	var r := EditorInterface.get_edited_scene_root()
-	var n: int = LightingScript.set_prop_lights_shown(r, on)
-	# The cull pass early-outs while the camera is still, so without this a
-	# toggle made standing in one place would not be re-decided until the user
-	# moved. It is also what applies the RANGE to fixtures just switched on:
-	# set_prop_lights_shown shows all of them, and the next tick trims them back
-	# to the slider.
-	LightingScript.invalidate_light_cull()
-	# ONE NUMBER ON A FEW DOZEN MATERIALS, not a rebuild.
-	#
-	# This used to call invalidate_materials and then re-apply every placed
-	# overlay. That re-resolves every surface from the depot - 13,097 of them,
-	# measured at 12.7 SECONDS in the user's log - to change an emission
-	# multiplier, and 99% of those surfaces have no glow to change. The materials
-	# are shared between the map context and placed props, so setting the
-	# parameter in place reaches both and nothing has to be rebuilt at all.
-	var want: float = PROP_EMISSION_ON if on else 0.0
-	var gs = mapctx.game_source if mapctx != null else null
-	if gs != null and gs.has_method("set_prop_emission"):
-		var t0 := Time.get_ticks_msec()
-		var touched: int = gs.set_prop_emission(want)
-		Log.info("Prop lighting %s: %d fixture(s), %d material(s) in %d ms"
-			% ["on" if on else "off", n, touched, Time.get_ticks_msec() - t0])
-	else:
-		# No map open yet. Nothing exists to update, but the value has to be
-		# right for whatever gets built next.
-		GameSourceScript.prop_emission = want
-	lbl.text = "Prop lighting " + ("on" if on else "off")
-	_save_mapctx_state()
-
-
-# How hard a lit sheet is driven when the switch is on. Ours, not the level's:
-# the sheet says WHERE the light is, not how bright the room should read.
-const PROP_EMISSION_ON := 4.0
 
 
 # WRAPPED RATHER THAN WRAPPED IN PLACE. The body below returns from five
@@ -6236,12 +4758,8 @@ static func _layer_chip_name(group: String) -> String:
 			return "Backdrops"
 		"Props":
 			return "Original map objects"
-		"Water":
-			return "Water"
 		"Roads":
 			return "Roads"
-		"FXCards":
-			return "FX"
 		"Terrain", "_MAP_CONTEXT":
 			return "Extended Terrain"
 	return group
@@ -6347,12 +4865,6 @@ func _on_node_added_body(node: Node) -> void:
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null or not root.is_ancestor_of(node): return
 	if HighpolyLib.in_overlay(node): return
-	# A REBUILT MODE IS NOT SOMETHING YOU JUST PLACED. Its nodes are owned (they
-	# are yours to keep and edit), so in_overlay above does not cover them, and
-	# they all sit under res://objects/ - which is exactly what the collision
-	# branch below tests. A few hundred capture points and spawns arriving at
-	# once would each get a collision overlay built for them.
-	if HighpolyGamemode.in_gamemode(node): return
 	# collision overlay for pieces placed while "Show collisions" is on
 	if col_chk != null and col_chk.button_pressed \
 			and String(node.scene_file_path).begins_with("res://objects/"):
@@ -6388,112 +4900,3 @@ func _swap_deferred(node: Node) -> void:
 	# the rest of your map content (O(1): only this node's own meshes are touched)
 	if mapctx_optimize != null and mapctx_optimize.button_pressed:
 		PlacedCull.apply(node as Node3D, _cull_radius(), true)
-
-
-# ------------------------------------------------------------------ BF6 menu
-#
-# THE SAME ENTRIES AS THE UNREAL ADD-ON'S WHEEL. HIGH POLY ("the real game
-# assets", order 900) opens this plugin's panel from the radial, as the Unreal
-# pill opens its control panel; in the menu bar it lists the panel's own
-# controls, in the order and under the section titles of menu.json - the file
-# the Unreal panel is built from too. LOADOUT (order 1050) is offered while a
-# spawner is selected and opens its Loadout panel.
-
-func _register_bf6_menu() -> void:
-	var bf6_menu := PluginMenu.ensure()
-	if bf6_menu == null:
-		return
-	bf6_menu.register_plugin("highpoly", "High Poly", 900, _bf6_menu_items,
-		func(_ctx): return "the real game assets", {"pick": func(_center): _bf6_show_panel()})
-	bf6_menu.register_plugin("highpoly.loadout", "Loadout", 1050, _bf6_loadout_items,
-		func(_ctx): return "soldiers, loot and vehicles",
-		{"available": func(ctx): return not _selected_spawners(ctx).is_empty(),
-		 "pick": func(_center): _bf6_open_loadout()})
-
-
-func _bf6_show_panel() -> void:
-	if dock_root == null or not is_instance_valid(dock_root):
-		return
-	if _is_docked():
-		var tabs := dock_root.get_parent() as TabContainer
-		if tabs != null:
-			tabs.current_tab = dock_root.get_index()
-	elif win != null and is_instance_valid(win):
-		win.show()
-		win.grab_focus()
-
-
-func _selected_spawners(ctx: Dictionary) -> Array:
-	var out: Array = []
-	for n in ctx.get("selection", []):
-		var type := HighpolyLib.LoadoutScript.type_of(n) if n is Node else ""
-		if type == "LootSpawner" or HighpolyLib.LoadoutScript.is_soldier_type(type):
-			out.append(n)
-	return out
-
-
-func _bf6_open_loadout() -> void:
-	var spawners := _selected_spawners(PluginMenu.find().context("radial") if PluginMenu.find() != null else {})
-	if not spawners.is_empty():
-		EditorInterface.inspect_object(spawners[0])
-
-
-func _bf6_loadout_items(ctx: Dictionary) -> Array:
-	var spawners := _selected_spawners(ctx)
-	return [{"id": "loadout", "label": "Loadout for the selected spawner",
-		"sub": "select a soldier or loot spawner" if spawners.is_empty() else "",
-		"disabled": spawners.is_empty(), "pick": _bf6_open_loadout}]
-
-
-func _bf6_menu_items(_ctx: Dictionary) -> Array:
-	var items: Array = [{"id": "panel", "label": "Open the High Poly panel", "pick": _bf6_show_panel}]
-	if _preparation != null and is_instance_valid(_preparation) and _preparation.has_method("show_progress"):
-		items.append({"id": "cache", "label": "Show caching progress", "pick": func(): _preparation.show_progress()})
-	for section in SharedMenu.data().get("sections", []):
-		var sec: Dictionary = section
-		var rows: Array = []
-		for group in sec.get("groups", []):
-			for control_id in (group as Dictionary).get("controls", []):
-				var b: Dictionary = _menu_bindings.get(str(control_id), {})
-				var c: Variant = b.get("control")
-				if not (c is Control) or not is_instance_valid(c):
-					continue
-				var root: Variant = b.get("root", c)
-				if root is Control and not (root as Control).is_visible_in_tree() and not (c as Control).visible:
-					continue
-				rows.append_array(_bf6_rows_for(str(control_id), c as Control))
-		if rows.is_empty():
-			continue
-		items.append({"separator": true, "label": str(sec.get("title", ""))})
-		items.append_array(rows)
-	return items
-
-
-# A control as menu rows: a toggle is a check row that stays open, an action a
-# plain row, a choice one check row per option. Sliders stay on the panel.
-func _bf6_rows_for(id: String, c: Control) -> Array:
-	if c is OptionButton:
-		var ob := c as OptionButton
-		var rows: Array = []
-		for i in range(ob.item_count):
-			if ob.is_item_separator(i) or ob.is_item_disabled(i):
-				continue
-			var index := i
-			rows.append({"id": "%s.%d" % [id, i], "label": ob.get_item_text(i), "checked": ob.selected == i,
-				"closes": false, "pick": func():
-					if ob.selected != index:
-						ob.select(index)
-						ob.item_selected.emit(index)})
-		return rows
-	if c is Button:
-		var b := c as Button
-		var label := b.text if b.text != "" else b.tooltip_text.get_slice("\n", 0)
-		if label == "":
-			label = id.capitalize()
-		if b.disabled:
-			return []
-		if b.toggle_mode:
-			return [{"id": id, "label": label, "checked": b.button_pressed, "closes": false,
-				"pick": func(): b.button_pressed = not b.button_pressed}]
-		return [{"id": id, "label": label, "pick": func(): b.pressed.emit()}]
-	return []

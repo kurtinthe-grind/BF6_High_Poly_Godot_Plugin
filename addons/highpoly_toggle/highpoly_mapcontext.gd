@@ -6,7 +6,7 @@ class_name HighpolyMapContext
 # Nothing is saved or exported; the SDK level scene stays byte-identical.
 #
 # EVERYTHING IS READ FROM THE PLAYER'S OWN BATTLEFIELD 6 INSTALL. Placements,
-# geometry, textures, terrain, water, roads, lights, FX and ground clutter all
+# geometry, textures, terrain, roads, lights, FX and ground clutter all
 # come out of the game's own files through the reader stack (bf6_source ->
 # bf6_walk -> bf6_meshset), and nothing is fetched or redistributed. Derived
 # results are cached under user://, keyed on the mounted TOCs' signature so a
@@ -35,19 +35,10 @@ var _show_backdrop := false        # distant skyline / out-of-bounds vista layer
 # That was backwards: the chip exists BECAUSE someone asked to build on bare
 # ground, and defaulting it on means switching the ground on and then having to
 # switch the streets back off every time. A layer you have to ask for is the
-# same contract as Backdrops and Water, and it is one click either way.
+# same contract as Backdrops, and it is one click either way.
 # Roads and paths are part of the ground now, not a layer, so they start
 # visible and stay visible unless something explicitly hides them.
 var _show_roads := true
-var _show_water := false           # rivers / sea layer on
-var _sdk_water_hidden := false     # the SDK's WaterPlane, hidden while ours draws
-# Set by the dock from its own toggles, because the light and FX layers are
-# switched independently of apply() and this object cannot see those buttons.
-# Default TRUE so a caller that never sets them gets exactly the old behaviour:
-# skipping work is opt-in, and a layer that quietly had no data would be a much
-# worse bug than mining data nobody asked for.
-var want_lights := true
-var want_fx := true
 # The Grass chip. OFF by default: the clutter had drawn nothing for months, so
 # for most users its arrival would read as a change nobody asked for - and it
 # costs instances. The chip makes it a choice, like Roads.
@@ -307,6 +298,10 @@ const PH_CACHE := "cache"           # served from a file this plugin wrote
 const PH_MEMORY := "memory"         # already in this process
 const PH_MIXED := "mixed"
 const PH_ENGINE := "engine"         # Godot did it: parse, upload, draw
+# Writing a cache is not reading one. These rows used to say "cache", which put
+# a cold build's cache WRITES in the same column as a warm build's cache hits,
+# and made cached and uncached runs read alike (OPT-14).
+const PH_WRITE := "cache write"
 
 var _ph_rows := {}                  # name -> {ms, n, items, from}
 var _ph_order: Array = []
@@ -513,6 +508,8 @@ func _ph_report(title: String) -> PackedStringArray:
 	out.append("  \"from\" says where the answer came from. A row marked cache is")
 	out.append("  cheap only because an earlier run paid for it. Rows marked")
 	out.append("  \"(of which)\" break down the row above and are not summed again.")
+	out.append("  \"cache write\" is a cold build saving for next time, never a hit;")
+	out.append("  \"install\" is cold work read from the game, \"engine\" is Godot's own.")
 	out.append("  %-42s %9s %7s %10s %11s  %s"
 		% ["phase", "wall", "calls", "items", "each", "from"])
 	var keys: Array = _ph_order.duplicate()
@@ -640,9 +637,6 @@ var _ctx_tex_mode := -1             # last apply(): detail mode (set_context_sho
 # The jpg is still fetched and still used — by the vegetation scatter, which
 # reads its greenness to decide where grass belongs — so _tile_params,
 # _maptile_tex and ensure_maptile all stay.
-#
-# distant flipbook cards (smoke columns / haze planes) follow the FX switch
-static var show_fx_cards := false
 
 func reset_props_verification() -> void:
 	# called when the sync manager adopts a NEW manifest (models changed)
@@ -750,7 +744,6 @@ const MAPTILE_DECALS := {
 	"MP_Tungsten": {"pos": Vector3(60.235, 86.514, -25.078), "size": Vector3(1550, 100, 1550), "nf": 0.507},
 }
 const DECAL_NODE := "_MAPTILE_DECAL"
-const WATER_NODE := "_WATER"
 
 # WHERE the maptile jpg actually lives â€” it moved, and the SDK no longer ships it:
 #   <= 1.3.3.0  res://raw/maptiles/<Level>.jpg, shipped with the SDK
@@ -781,14 +774,6 @@ const SDK_DECAL_SUFFIX := "_Decal"
 const SDK_BOUNDS := "res://addons/bf_portal/terrain_decal/bounds.json"
 static var _sdk_bounds: Dictionary = {}
 static var _sdk_bounds_read := false
-
-# Water is a flat surface entity (WaterEntityData), not a mesh placement. Its
-# exact plane (surface height Y, world centre, X/Z extent) is EXTRACTED per map
-# from the level's water.ebx and shipped in placements.json ("water"). A flat
-# plane at that height is exact for the surface: terrain above it occludes it, so
-# it shows only where the ground is below the waterline. Maps with no water body
-# carry no "water" key and get no plane. (No guessed/global water.)
-const WATER_COLOR := Color(0.10, 0.22, 0.30, 0.72)
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -1928,12 +1913,10 @@ func _load_data(map: String) -> bool:
 		# That is a file derived from the player's own game, not a download.
 		# The drape must sample the same lattice this context meshes the
 		# terrain on, or the roads sit on a surface nobody draws.
-		# ONLY WHAT THE LAYERS THAT ARE ON NEED. Mining lights, FX and water for
-		# an apply that draws none of them was 64 s of a 74 s terrain-only apply
-		# in a user's log. Anything skipped is mined the moment its layer is
-		# switched on, so this costs nothing later.
+		# ONLY WHAT THE LAYERS THAT ARE ON NEED. The decal volumes are mined
+		# only with the objects layer; anything skipped is mined the moment its
+		# layer is switched on, so this costs nothing later.
 		_data = game_source.map_data("%s/%s" % [CACHE, map], {
-			"lights": want_lights, "fx": want_fx, "water": _show_water,
 			"edv": _show_objects,
 		})
 		# AFTER map_data, not before: the stride is derived from the terrain
@@ -2044,9 +2027,8 @@ func _active_variant_layers(mode: String) -> Dictionary:
 	# the placements came out of, so the honest reading of "winter_event" or
 	# "rush" is: show the normal dressing AND that layer.
 	#
-	# Additive, which is what highpoly_gamemode.gd's own header says these are:
-	# "modes share all scenery in BF6 - these are ADDITIVE gameplay markers, not
-	# prop swaps".
+	# Additive: modes share all scenery in BF6, so a mode's layer adds to the
+	# normal dressing rather than swapping props.
 	if mode != "" and mode != "Off":
 		act[mode] = true
 	return act
@@ -2087,13 +2069,12 @@ func set_variant_layers(mode: String) -> String:
 
 # The distant flipbook cards â€” the big camera-facing planes the level uses for
 # smoke columns and haze. They arrive as ordinary props (the baker tags their
-# material "__fxanim3" and _fx_animate_materials swaps it to fx_smoke.gdshader),
-# so nothing gated them: they came in with "Original map objects" and, being
-# hundreds of metres across and drawn near the skyline, they sit in front of the
-# surroundings you actually wanted to look at.
+# material "__fxanim3"), so nothing gated them: they came in with "Original map
+# objects" and, being hundreds of metres across and drawn near the skyline, they
+# sit in front of the surroundings you actually wanted to look at.
 #
-# They are an EFFECT, not scenery, so they belong to the FX switch. Routed into
-# their own group under Props whose visibility follows it.
+# They are an EFFECT, not scenery. They used to follow the FX switch, which was
+# off by default; the fork removed FX (F-08), so the builders skip them.
 static func _is_fx_card(m: Mesh, asset_name := "") -> bool:
 	# Name first: the material tag is not reliable on its own. Measured on
 	# Dumbo, the level carries 4 of these sheets over 23 placements, and only
@@ -2108,173 +2089,10 @@ static func _is_fx_card(m: Mesh, asset_name := "") -> bool:
 	var am := m as ArrayMesh
 	for i in range(am.get_surface_count()):
 		var mat := am.surface_get_material(i)
-		# post-swap: already a ShaderMaterial running the flipbook shader
-		if mat is ShaderMaterial:
-			var sh: Shader = (mat as ShaderMaterial).shader
-			if sh != null and String(sh.resource_path).ends_with("fx_smoke.gdshader"):
-				return true
-		# pre-swap (or a sidecar baked before the swap existed): the baker's tag
-		elif mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
+		# the baker's tag
+		if mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
 			return true
 	return false
-
-
-func _fx_cards_group(props_root: Node3D) -> Node3D:
-	var g := props_root.get_node_or_null("FXCards")
-	if g != null:
-		return g as Node3D
-	var n := Node3D.new()
-	n.name = "FXCards"
-	props_root.add_child(n)
-	n.owner = null
-	n.visible = show_fx_cards
-	return n
-
-
-# Flip the flipbook cards without rebuilding. Returns false when no card layer
-# exists yet, so the caller can decide whether a rebuild is warranted.
-func set_fx_cards_shown(root: Node, on: bool) -> bool:
-	show_fx_cards = on
-	var gs := _fx_card_groups(root)
-	if gs.is_empty():
-		return false
-	for g in gs:
-		(g as Node3D).visible = on
-	return true
-
-
-# Flip the water layer without rebuilding, same contract as the others.
-func set_water_shown(root: Node, on: bool) -> bool:
-	_show_water = on
-	if root == null:
-		return false
-	var ctx := root.get_node_or_null(NODE)
-	if ctx == null:
-		return false
-	var w := ctx.get_node_or_null("Water")
-	if w == null:
-		# NAMED, not a bare false. "No water node" and "this map has no water"
-		# are different answers and this used to give the same one for both.
-		Log.info("Water: chip %s, but there is no Water node under the map "
-			% ("ON" if on else "off")
-			+ "context to show or hide (either it has not been built yet or "
-			+ "this map has no water body).")
-		return false
-	(w as Node3D).visible = on
-	set_sdk_water_hidden(root, on)
-	log_water_state("the Water chip was toggled", root)
-	return true
-
-
-# THE SDK'S OWN WATER PLANE, OUT OF THE WAY WHILE OURS IS ON.
-#
-# The level scene ships a WaterPlane under Static. With our water built, both
-# draw: the SDK's flat plane sits at its authored height and fights ours, which
-# is the surface read from the game with its own cascades. Ours is the one to
-# see, so the SDK's is hidden for as long as ours is shown and put back the
-# moment it is not.
-#
-# HIDDEN ON THE RENDER SIDE, NOT BY SETTING `visible`. This is the user's scene
-# and the node belongs to the SDK: writing a node property marks the scene
-# modified, and a later save would persist a change they never made. Setting
-# the instance's visibility through the RenderingServer draws nothing and
-# leaves the scene byte-identical.
-func set_sdk_water_hidden(root: Node, hidden: bool) -> void:
-	if root == null or not is_instance_valid(root):
-		return
-	var found := 0
-	for node in _sdk_water_planes(root):
-		for rid in _visual_rids(node):
-			RenderingServer.instance_set_visible(rid, not hidden)
-			found += 1
-	if hidden != _sdk_water_hidden or found == 0:
-		# ZERO IS AN ANSWER TOO. "Hid the SDK plane" and "there was no SDK plane
-		# to hide" look identical from the viewport, and the second one is the
-		# case worth seeing: it means this level scene does not carry one, or it
-		# is named something else and ours is now drawing on top of it.
-		Log.info("Water: the SDK's own WaterPlane is %s (%d instance(s)) "
-			% ["hidden while High Poly water is shown" if hidden
-				else "visible again", found]
-			+ "- its scene is not modified, only what the viewport draws.")
-	_sdk_water_hidden = hidden
-
-
-func _sdk_water_planes(root: Node) -> Array:
-	var out: Array = []
-	var stack: Array = [root]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		# Never our own overlay: it is the water we are showing.
-		if n.name == NODE:
-			continue
-		for c in n.get_children():
-			stack.append(c)
-		if str(n.name).begins_with("WaterPlane"):
-			out.append(n)
-	return out
-
-
-func _visual_rids(node: Node) -> Array:
-	var out: Array = []
-	var stack: Array = [node]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			stack.append(c)
-		if n is VisualInstance3D:
-			out.append((n as VisualInstance3D).get_instance())
-	return out
-
-
-# The chip's state and the node's state, side by side.
-#
-# They can disagree in both directions and every one of those is a bug worth
-# naming: chip on with the node missing, chip on with the node hidden by
-# something else, or a stale visible node the chip no longer controls. A user
-# reported the objects build erasing their water and there was nothing watching
-# either half, so the report could not be checked against anything.
-func log_water_state(when: String, root: Node) -> void:
-	if root == null:
-		return
-	var ctx := root.get_node_or_null(NODE)
-	if ctx == null:
-		return
-	var w := ctx.get_node_or_null("Water")
-	if w == null:
-		Log.info("Water state (%s): chip %s, NO Water node in the scene."
-			% [when, "ON" if _show_water else "off"])
-		return
-	var vis: bool = (w as Node3D).visible
-	var n_surf := w.get_child_count()
-	var msg := ("Water state (%s): chip %s, node present with %d surface(s), "
-		+ "visible=%s") % [when, "ON" if _show_water else "off", n_surf,
-			str(vis)]
-	if _show_water != vis:
-		Log.warn(msg + "  -- THE CHIP AND THE NODE DISAGREE, which is the "
-			+ "fault to report.")
-	else:
-		Log.info(msg)
-
-
-# Every FXCards group under the overlay, wherever it was parented. Both the
-# props and the backdrop builders can create one, because which layer a level
-# files its smoke sheets under is the level's choice, not ours.
-func _fx_card_groups(root: Node) -> Array:
-	var out: Array = []
-	if root == null:
-		return out
-	var ctx := root.get_node_or_null(NODE)
-	if ctx == null:
-		return out
-	var stack: Array = [ctx]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			if c.name == "FXCards":
-				out.append(c)
-			else:
-				stack.append(c)
-	return out
 
 
 func _variant_group(props_root: Node3D, key: String) -> Node3D:
@@ -2871,12 +2689,11 @@ func _finish_prop(gp: String, baked: String, out: Array,
 	for m in out:
 		if m == null:
 			continue
-		_fx_animate_materials(m)
 		_wind_swap_materials(m)
 		_parallax_materials(m)
 		_terrainblend_materials(m)
 		# AFTER the material passes, so anything that swaps a material in (wind,
-		# parallax, fx) has its textures compressed too, and BEFORE the sidecar
+		# parallax) has its textures compressed too, and BEFORE the sidecar
 		# is written below so the saving is baked into the cache rather than
 		# re-paid on every load.
 		var _tc := Time.get_ticks_msec()
@@ -2946,7 +2763,7 @@ func flush_sidecars() -> void:
 			await get_tree().process_frame
 			slice = Time.get_ticks_msec()
 	var ms := Time.get_ticks_msec() - t0
-	_ph("sidecars: write fast-load cache", ms, n, PH_CACHE)
+	_ph("sidecars: write fast-load cache", ms, n, PH_WRITE)
 	HighpolyProfiler.crumb("sidecars", "wrote %d in %.1f s" % [n, ms / 1000.0])
 	Log.debug("fast-load cache: %d sidecar(s) written in %.1f s" % [n, ms / 1000.0])
 
@@ -2976,35 +2793,11 @@ func _write_sidecar(gp: String, baked: String, done: Array) -> void:
 
 # ---------- Configure Shaders (dock dialog) ----------
 # live-tunable overlay shader prefs, persisted by the dock:
-#   water    â€“ multiplier on each water body's AUTHORED ripple_speed (0 = still)
-#   flip     â€“ multiplier on flipbook-card animation speed (smoke; 0 = static)
 #   wind     â€“ subtle foliage sway on leaf-card materials
-static var shader_prefs := {"water": 1.0, "flip": 1.0, "wind": false, "wind_str": 0.08}
-const FLIP_BASE_SPEED := 0.25          # fx_smoke.gdshader authored default
+static var shader_prefs := {"wind": false, "wind_str": 0.08}
 
-# Backdrop-FX flipbook cards (smoke plumes): the baker tags materials whose
-# sheet packs 3 animation-time samples in R/G/B with "__fxanim3" and keeps the
-# packed data. Swap those for fx_smoke.gdshader, which crossfades the channels
-# live â€” the smoke billows in the editor using the game's own texture data.
-static var _fx_smoke_shader: Shader = null
 static var _wind_shader: Shader = null
 const WIND_MAT_PAT := "leaf|leaves|frond|foliage|grass|weed|plant|fern|bush"
-
-static func _fx_animate_materials(m: Mesh) -> void:
-	if not (m is ArrayMesh): return
-	var am := m as ArrayMesh
-	for i in range(am.get_surface_count()):
-		var mat := am.surface_get_material(i)
-		if mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
-			if _fx_smoke_shader == null:
-				_fx_smoke_shader = load((HighpolyMapContext as Script)
-						.resource_path.get_base_dir() + "/fx_smoke.gdshader")
-			if _fx_smoke_shader == null: return
-			var sm := ShaderMaterial.new()
-			sm.shader = _fx_smoke_shader
-			sm.set_shader_parameter("packed_tex", (mat as BaseMaterial3D).albedo_texture)
-			sm.set_shader_parameter("speed", FLIP_BASE_SPEED * float(shader_prefs.get("flip", 1.0)))
-			am.surface_set_material(i, sm)
 
 # Foliage Wind: swap leaf-card materials (name matches WIND_MAT_PAT AND the
 # material is alpha-cutout â€” trunks/bark stay put) for foliage_wind.gdshader.
@@ -3199,17 +2992,16 @@ static func _wind_swap_materials(m: Mesh) -> void:
 		sm.set_shader_parameter("specular_amount", bm.metallic_specular)
 		am.surface_set_material(i, sm)
 
-# push the current shader_prefs onto every live overlay material (water plane,
-# flipbook cards, foliage) â€” called by the dock's Configure Shaders dialog and
+# push the current shader_prefs onto every live overlay material (foliage)
+# â€” called by the dock's Configure Shaders dialog and
 # after builds finish (sidecar-cached meshes carry the params they were saved
 # with). Walk is cheap: materials only, no geometry.
 func apply_shader_prefs(root: Node) -> String:
 	var ctx := root.get_node_or_null(NODE) if root != null else null
 	if ctx == null: return "Map Context off"
-	var counts := {"water": 0, "flip": 0, "wind": 0}
+	var counts := {"wind": 0}
 	_prefs_walk(ctx, counts)
-	return "Shaders: %d water, %d flipbook, %d foliage material(s) updated" % [
-		counts["water"], counts["flip"], counts["wind"]]
+	return "Shaders: %d foliage material(s) updated" % counts["wind"]
 
 func _prefs_walk(n: Node, counts: Dictionary) -> void:
 	if n is GeometryInstance3D:
@@ -3237,20 +3029,7 @@ func _prefs_mat(mat: Material, counts: Dictionary) -> void:
 	var sm := mat as ShaderMaterial
 	if sm.shader == null: return
 	var sp := String(sm.shader.resource_path)
-	# water: HighpolyWater builds its Shader from TEXT (no resource_path â€” a
-	# path match can NEVER hit it; that was "the water slider does nothing").
-	# Detect it by its own parameter instead: every water material sets
-	# ripple_speed explicitly from its kind preset.
-	if sm.get_shader_parameter("ripple_speed") != null:
-		if not sm.has_meta("base_ripple"):
-			sm.set_meta("base_ripple", float(sm.get_shader_parameter("ripple_speed")))
-		sm.set_shader_parameter("ripple_speed",
-				float(sm.get_meta("base_ripple")) * float(shader_prefs.get("water", 1.0)))
-		counts["water"] += 1
-	elif sp.ends_with("/fx_smoke.gdshader"):
-		sm.set_shader_parameter("speed", FLIP_BASE_SPEED * float(shader_prefs.get("flip", 1.0)))
-		counts["flip"] += 1
-	elif sp.ends_with("/foliage_wind.gdshader"):
+	if sp.ends_with("/foliage_wind.gdshader"):
 		sm.set_shader_parameter("wind_strength",
 				float(shader_prefs.get("wind_str", 0.08)) if bool(shader_prefs.get("wind", false)) else 0.0)
 		counts["wind"] += 1
@@ -3726,7 +3505,6 @@ func _merge_meshes_inner(pairs: Array) -> Array:
 #                          untangented vista wall warns on every draw call.
 #   _wind_swap_materials() REPLACES alpha-cutout leaf materials matching
 #                          WIND_MAT_PAT with foliage_wind.gdshader.
-#   _fx flipbook swap      REPLACES "__fxanim3" materials with fx_smoke.gdshader.
 #
 # A ShaderMaterial is assumed to want tangents: we cannot introspect a shader's
 # varyings from GDScript, and generating them is cheap next to a per-draw-call
@@ -3784,7 +3562,7 @@ static func _wants_tangents(mat: Variant) -> bool:
 	if bm.normal_texture != null or bm.heightmap_enabled:
 		return true
 	var nm := String(bm.resource_name)
-	if nm.contains("__vtrparallax") or nm.contains("__fxanim3"):
+	if nm.contains("__vtrparallax"):
 		return true
 	# foliage wind only swaps alpha-cutout, textured, name-matched materials
 	if bm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED \
@@ -3957,16 +3735,13 @@ func _no_backdrop_shadow(g: GeometryInstance3D) -> void:
 
 # "This node must never cast, whatever any toggle says."
 #
-# Setting cast_shadow = OFF at build time is not enough on its own: the Shadows
-# checkbox walks the whole overlay and re-derives casting from the mesh's extent
-# (HighpolyLighting._set_shadows), and the skyline is 500+ m across, so it sails
-# past any size rule and switches straight back on. That is exactly what
-# happened â€” a measured pass came back with 6,627 of 6,632 backdrop surfaces
-# casting again, 26,508 draw calls, after the build had correctly turned them
-# off. The terrain went with it.
-#
-# So the intent has to live ON THE NODE where every later pass can see it,
-# rather than in a flag that the next walk overwrites.
+# Setting cast_shadow = OFF at build time was not enough on its own while a
+# Shadows checkbox walked the whole overlay and re-derived casting from the
+# mesh's extent: the skyline is 500+ m across, so it sailed past any size rule
+# and switched straight back on (a measured pass came back with 6,627 of 6,632
+# backdrop surfaces casting again). That checkbox is gone (fork F-08), but the
+# merge pass below still re-derives casting, so the intent lives ON THE NODE
+# where every later pass can see it.
 static func mark_never_casts(g: GeometryInstance3D) -> void:
 	if g == null:
 		return
@@ -3992,19 +3767,19 @@ static func mark_never_casts(g: GeometryInstance3D) -> void:
 # apply() launches set their own crumbs after this returns, and stamping idle
 # over one of those would re-arm the same lie in the other direction.
 func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
-		backdrop := false, water := false) -> String:
+		backdrop := false) -> String:
 	HighpolyVitals.crumb("applying the map context")
-	var verdict := _apply_body(root, enabled, show_objects, tex, backdrop, water)
+	var verdict := _apply_body(root, enabled, show_objects, tex, backdrop)
 	if HighpolyVitals.crumb_now() == "applying the map context":
 		HighpolyVitals.crumb("idle, nothing building")
 	return verdict
 
 
 func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
-		backdrop := false, water := false) -> String:
+		backdrop := false) -> String:
 	# The phase table covers ONE apply and the builds it launches. Reset here
-	# rather than per build: the two builders run concurrently and the terrain,
-	# the roads and the water are paid before either of them starts, so a table
+	# rather than per build: the two builders run concurrently and the terrain
+	# and the roads are paid before either of them starts, so a table
 	# that began at the props build would miss the first half of the wait.
 	_ph_reset()
 	var _t_apply := Time.get_ticks_msec()
@@ -4019,7 +3794,6 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 	_active = enabled
 	_show_objects = show_objects
 	_show_backdrop = backdrop
-	_show_water = water
 	_ctx_tex_mode = tex_mode
 	if root == null: return "No scene open"
 	var map := map_of(root)
@@ -4072,11 +3846,6 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 				old_ctx2.remove_child(pr)
 				saved_props = pr as Node3D
 	var _t_clear := Time.get_ticks_msec()
-	# THE SDK'S WATER COMES BACK FIRST. Our water is about to be torn down, and
-	# leaving its plane hidden after that would take the map's water away
-	# altogether. The water build turns it off again a moment later if ours
-	# returns.
-	set_sdk_water_hidden(root, false)
 	_clear(root, saved_bd != null, saved_props != null)
 	# THE TEARDOWN IS A PHASE. It frees every MultiMeshInstance in the overlay,
 	# which on a full map is tens of thousands of nodes, and it runs on the main
@@ -4087,7 +3856,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 		1, PH_ENGINE)
 
 	# Load map data whenever we need geometry: terrain context OR objects.
-	var need_data := enabled or show_objects or backdrop or water
+	var need_data := enabled or show_objects or backdrop
 
 	# EVERYTHING OFF MEANS GIVE THE MEMORY BACK.
 	#
@@ -4125,8 +3894,8 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 				% [freed.get("textures", 0), freed.get("materials", 0),
 				   freed.get("meshes", 0),
 				   prev_map if switched_map else "the map context",
-				   "Building the new map from the on-disk cache." if switched_map
-				   else "Turning a layer back on rebuilds from the on-disk cache."])
+				   "The new map builds from its geometry and texture packs where they exist, otherwise from the install." if switched_map
+				   else "Turning a layer back on reads its geometry and texture packs where they exist, otherwise the install."])
 	var have_data := false
 	if need_data:
 		# ASKED BEFORE THE CALL, not after: the call is what fills the cache, so
@@ -4148,8 +3917,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# `backdrop` counts here too: the skyline is a layer in its own right, so
 	# wanting it is reason enough to build even with the terrain, the objects and
 	# the textured ground all off.
-	if not enabled and not textured and not show_objects and not backdrop \
-			and not water:
+	if not enabled and not textured and not show_objects and not backdrop:
 		return "Map Context off"
 
 	# one owner=null container for all editor-only overlay geometry (never saved)
@@ -4179,8 +3947,11 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 		# is not instant even on a map that is otherwise fully built.
 		var _t_tm := Time.get_ticks_msec()
 		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
+		# From the map's cache folder only when the surface was a cache hit this
+		# open; otherwise those files were composited moments ago.
+		var _surf_hit: bool = game_source != null and bool(game_source.get("_surface_cached"))
 		_ph("terrain: ground material (splat + colour map)",
-			Time.get_ticks_msec() - _t_tm, maxi(1, _splat_n), PH_CACHE)
+			Time.get_ticks_msec() - _t_tm, maxi(1, _splat_n), PH_CACHE if _surf_hit else PH_MIXED)
 
 	# STAND DOWN, AND STAND THEIRS DOWN TOO.
 	#
@@ -4202,7 +3973,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 	_ph("decals: maptile and SDK decal", Time.get_ticks_msec() - _t_dec, 1,
 		PH_ENGINE)
 
-	if not enabled and not show_objects and not backdrop and not water:
+	if not enabled and not show_objects and not backdrop:
 		if not textured: return "Map Context off"
 		return "Map Context off (the SDK's ground texture is yours to control)"
 	if not have_data:
@@ -4261,9 +4032,10 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 			# per chunk rather than only by whether the total moved.
 			var _t_ter := Time.get_ticks_msec()
 			var tmi := _build_terrain_from_heightmap(dir, hm)   # chunked full-accuracy mesh from raw 16-bit heights
-			_ph("terrain: build the heightfield mesh",
+			_ph("terrain: build the heightfield mesh" + (" (cached .res)" if _terrain_from_cache else ""),
 				Time.get_ticks_msec() - _t_ter,
-				0 if tmi == null else tmi.get_child_count(), PH_CACHE)
+				0 if tmi == null else tmi.get_child_count(),
+				PH_CACHE if _terrain_from_cache else PH_ENGINE)
 			if tmi:
 				# exact data height, no sink (was -0.5 to dodge z-fighting under
 				# the SDK bowl: read as "terrain a meter low" â€” the heightmap is
@@ -4295,7 +4067,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 					var scam := _editor_cam()
 					if scam: _scatter.tick(scam.global_transform.origin)
 				_ph("scatter: set up the vegetation kits",
-					Time.get_ticks_msec() - _t_sc, maxi(1, _scatter_n), PH_CACHE)
+					Time.get_ticks_msec() - _t_sc, maxi(1, _scatter_n), PH_ENGINE)
 	# Roads and street markings, baked from the level's TerrainDecals and draped
 	# on the heightfield by roads_build.py. They belong with the ground, so they
 	# follow Extended Terrain rather than getting a switch of their own: without
@@ -4345,11 +4117,6 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 						(rc as GeometryInstance3D).layers = EXT_TERRAIN_LAYER
 						mark_never_casts(rc as GeometryInstance3D)
 
-	# Water is its own layer too. It is not terrain (plenty of maps have a river
-	# or a harbour you may want to see without the surrounding ground, or the
-	# other way round) and it is not scenery. The Configure Shaders water setting
-	# still drives its ripple speed either way: apply_shader_prefs walks the whole
-	# overlay, so the plane picks the pref up wherever it is parented.
 	if _roads_from != "":
 		# The chip's state survives a rebuild: whichever branch above placed the
 		# node, it starts hidden if that is how the user left it.
@@ -4370,19 +4137,10 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 			% ["ON" if _show_roads else "OFF",
 				str((_rd as Node3D).visible if _rd is Node3D else false)]
 			+ "are terrain, not this node)")
-	if water:
-		# One plane per body plus its shader, its normal maps and its wave video.
-		# It has its own toggle and its own complaint history ("Water takes a
-		# moment"), so it gets its own row instead of disappearing into apply.
-		var _t_w := Time.get_ticks_msec()
-		_add_water_plane(ctx, textured)
-		var _wn: Variant = _data.get("water", []) if _data is Dictionary else []
-		_ph("water: build the surface", Time.get_ticks_msec() - _t_w,
-			maxi(1, (_wn as Array).size() if _wn is Array else 1), PH_INSTALL)
 
 	# The distant skyline / out-of-bounds vista is its OWN layer, not part of the
-	# terrain. Extended Terrain gives you the ground the level sits on, Water the
-	# rivers and sea, Backdrops the horizon around it, and Original map objects
+	# terrain. Extended Terrain gives you the ground the level sits on,
+	# Backdrops the horizon around it, and Original map objects
 	# the level's own props. Each is separately switchable because they answer
 	# different questions about a build.
 	# Re-parented, not rebuilt. _bd_total/_bd_done/_bd_ok and _bd_list are left
@@ -4670,13 +4428,11 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			var bm := _mesh_for(str(e["model"]))
 			if bm != null:
 				meshes = [bm]
-		if meshes.size() > 0 and is_instance_valid(bd_root):
-			var mesh: Mesh = meshes[0]
-			# a smoke sheet filed under the backdrop layer follows the FX switch
-			# too, wherever the level chose to put it
+		# a smoke sheet filed under the backdrop layer is an effect too, wherever
+		# the level chose to put it, and is not drawn (see _is_fx_card)
+		if meshes.size() > 0 and is_instance_valid(bd_root) \
+				and not _is_fx_card(meshes[0], str(e.get("name", e.get("mesh", "")))):
 			var bdest: Node3D = bd_root
-			if _is_fx_card(mesh, str(e.get("name", e.get("mesh", "")))):
-				bdest = _fx_cards_group(bd_root)
 			# orange, not green: the skyline is made of the level's own
 			# buildings, so untextured it should match the map objects in front
 			# of it rather than the ground under it
@@ -4736,8 +4492,9 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	var _side_n := maxi(1, _side_writes.size())
 	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()          # cache written after the skyline is up
+	_flush_game_packs("skyline")
 	_ph("skyline: flush the fast-load sidecars",
-		Time.get_ticks_msec() - _t_side, _side_n, PH_CACHE)
+		Time.get_ticks_msec() - _t_side, _side_n, PH_WRITE)
 	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
 	_release_texture_images()       # no-op if the props lane is still running
 	backdrop_progress.emit(_bd_total, _bd_total)
@@ -4923,14 +4680,14 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# even when the parse failed, so a file that lands later refreshes in)
 			if not _prop_by_src.has(gp): _prop_by_src[gp] = []
 			(_prop_by_src[gp] as Array).append(e)
+		# flipbook cards are an effect, not scenery, and are not drawn
+		if mesh != null and _is_fx_card(mesh, str(e.get("mesh", ""))):
+			mesh = null
 		if mesh != null:
 			var _t1 := Time.get_ticks_msec()
 			var xf: Array = e.get("xf", [])
 			var em: Dictionary = _prop_layers.get(str(e.get("mesh", "")), {})
-			# flipbook cards are an effect, not scenery â€” own group, FX switch
 			var dest: Node3D = props_root
-			if _is_fx_card(mesh, str(e.get("mesh", ""))):
-				dest = _fx_cards_group(props_root)
 			# THE SUBWORLD THIS GROUP CAME FROM, when the reader supplied one.
 			#
 			# Groups are keyed by (mesh, scope, variation), so every instance in
@@ -4939,7 +4696,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# to carry, and available without the miner that produced it.
 			#
 			# "" means always on and keeps the entry in the base group.
-			elif str(e.get("layer", "")) != "":
+			if str(e.get("layer", "")) != "":
 				dest = _variant_group(props_root, str(e["layer"]))
 			if em.is_empty():
 				# every mesh of a split prop, or the split drops what the
@@ -5059,8 +4816,9 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	var _side_n := maxi(1, _side_writes.size())   # drained by the flush
 	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()
+	_flush_game_packs("props")
 	_ph("props: flush the fast-load sidecars",
-		Time.get_ticks_msec() - _t_side, _side_n, PH_CACHE)
+		Time.get_ticks_msec() - _t_side, _side_n, PH_WRITE)
 	_report_progress(true)
 	# The CPU-side texture pool has done its job — it exists to stop the same
 	# pixels being decoded once per prop, and nothing decodes after this. The GPU
@@ -5069,20 +4827,6 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_release_texture_images()
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
 		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
-	# THE REPORTED SCENARIO. A user watched the objects layer erase their water,
-	# and nothing was looking at the water either side of this build, so there
-	# was nothing to check the report against. If it happens again this line is
-	# the evidence.
-	if is_instance_valid(props_root):
-		var _wr := props_root.get_parent()
-		var _scene_root: Node = _wr.get_parent() if _wr != null else null
-		# The objects build is the last thing to finish, and the water node may
-		# have been built before the chip state was known, so this is where the
-		# SDK plane's visibility is settled for the finished map.
-		if _scene_root != null and _wr != null:
-			set_sdk_water_hidden(_scene_root,
-				_show_water and _wr.get_node_or_null("Water") != null)
-		log_water_state("the objects layer finished building", _scene_root)
 	HighpolyProfiler.mark("phase", "textures: %d distinct of %d wanted (%d reused), %d GPU"
 		% [int(_ps["misses"]), int(_ps["hits"]) + int(_ps["misses"]),
 		   int(_ps["hits"]), int(_ps["textures"])])
@@ -5136,7 +4880,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			int(game_source.n_geom_loaded), PH_CACHE)
 		_ph("props: game source, save geometry to the cache",
 			int(game_source.t_geom_save / 1000),
-			int(game_source.n_geom_saved), PH_CACHE)
+			int(game_source.n_geom_saved), PH_WRITE)
 		HighpolyProfiler.mark("phase",
 			"game source geometry cache: %d loaded (%.1f s), %d saved (%.1f s)"
 			% [int(game_source.n_geom_loaded), game_source.t_geom_load / 1e6,
@@ -5165,6 +4909,17 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		"instances": _inst_made, "mmi": _mmi_made, "cells": _cells.size(),
 	})
 	build_finished.emit(_build_props)
+
+# The geometry and texture packs this build filled (OPT-01/02) are closed off
+# here, after the layer is on screen, so the next build of this map reads them.
+# flush_packs() also writes the hit/miss line to the session log.
+func _flush_game_packs(what: String) -> void:
+	if game_source == null or not game_source.has_method("flush_packs"):
+		return
+	var t := Time.get_ticks_msec()
+	game_source.flush_packs()
+	_ph("%s: close the geometry and texture packs" % what, Time.get_ticks_msec() - t, 1, PH_WRITE)
+
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
 # write the host's status label when one was injected; without a label, fall
@@ -5320,11 +5075,12 @@ func purge_map(map: String, info: Dictionary) -> void:
 func _map_reader_caches(map: String) -> Array:
 	var lvl := map.to_lower()
 	var out: Array = []
-	var da := DirAccess.open("user://bf6_geom")
-	if da != null:
-		for sub in da.get_directories():
-			if str(sub).to_lower().begins_with(lvl + "_"):
-				out.append("user://bf6_geom/%s/" % str(sub))
+	for pack_root in ["user://bf6_geom", "user://bf6_tex"]:
+		var da := DirAccess.open(pack_root)
+		if da != null:
+			for sub in da.get_directories():
+				if str(sub).to_lower().begins_with(lvl + "_"):
+					out.append("%s/%s/" % [pack_root, str(sub)])
 	var root := DirAccess.open("user://")
 	if root != null:
 		for f in root.get_files():
@@ -5338,7 +5094,7 @@ const READER_CACHE_DIR := "user://bf6_geom"
 
 
 static func reader_cache_files() -> Array:
-	var out: Array = ["user://bf6_geom"]
+	var out: Array = ["user://bf6_geom", "user://bf6_tex"]
 	var da := DirAccess.open("user://")
 	if da != null:
 		for f in da.get_files():
@@ -5433,144 +5189,6 @@ static func _rm_dir_recursive(path: String) -> void:
 		da.remove(f)
 	DirAccess.remove_absolute(path)
 
-# Water: exact flat plane(s) from the extracted WaterEntityData / placed water
-# quads in placements.json. "water" is either one {height, center, size} dict (a
-# single sea-level surface) or a LIST of them (separate lakes/rivers/pools at
-# different elevations, e.g. Golmud's mountain lakes). Optional per-plane keys:
-# "kind" (ocean/river/lake/pool shading preset), "yaw" (rotated quads, radians),
-# "color" ([r,g,b] tint override) â€” see HighpolyWater. Terrain above a plane
-# occludes it, so each only shows where the ground dips below its own waterline.
-# Maps without a water body carry no "water" key and get no planes.
-func _add_water_plane(ctx: Node3D, textured: bool) -> void:
-	var wdata: Variant = _data.get("water", null)
-	var planes: Array = []
-	if wdata is Dictionary:
-		planes = [wdata]
-	elif wdata is Array:
-		planes = wdata
-	if planes.is_empty():
-		return
-	# Own group, like Props and Backdrop, so Water can be switched without
-	# rebuilding: several maps carry more than one body (rivers plus a harbour),
-	# and they all end up named WATER_NODE, which Godot then auto-renames. A
-	# parent node is something set_water_shown() can actually find.
-	var wroot := Node3D.new()
-	wroot.name = "Water"
-	ctx.add_child(wroot)
-	wroot.owner = null
-	ctx = wroot
-	var native_materials: Array = []
-	for wcfg in planes:
-		if not (wcfg is Dictionary): continue
-		# THE RIVER/LAKE SURFACE: terrain block 2, meshed per texel by the game
-		# source (see terrain_water). Not a plane at one height - the water
-		# level descends along the flow - so it arrives as a finished mesh in
-		# world space and only needs the water look.
-		if wcfg.has("mesh") and wcfg["mesh"] is Mesh:
-			var rv := MeshInstance3D.new()
-			rv.name = "RiverSurface"
-			rv.mesh = wcfg["mesh"] as Mesh
-			# THE FULL MINED LOOK IS BACK ON. RESEARCH-WATER2.md acquitted the
-			# game-look mapping with numbers: tungsten's mined ocean colour is
-			# BRIGHTER than the preset that renders, alpha is untouched by the
-			# mapping and floors at 0.45, and dumbo/aftermath bind darker
-			# colours through identical code and always rendered. The
-			# "invisible" conviction came from a confounded experiment - it
-			# predates the stale-answer and stale-node fixes, both of which
-			# were the actual fault. The kind rides in wcfg ("river", set by
-			# the game source), so the preset seeds river ripple scales before
-			# the mined constants land on top.
-			var rmat: Material = null
-			if textured:
-				rmat = HighpolyWater.material(wcfg, game_source)
-			if rmat == null:
-				var rfb := StandardMaterial3D.new()
-				rfb.albedo_color = Color(0.11, 0.34, 0.48, 0.82)
-				rfb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-				rfb.metallic = 0.55
-				rfb.roughness = 0.08
-				rfb.cull_mode = BaseMaterial3D.CULL_DISABLED
-				rmat = rfb
-			rv.material_override = rmat
-			rv.layers = EXT_TERRAIN_LAYER
-			ctx.add_child(rv); rv.owner = null
-			# SAY SO. Every earlier stage of this hunt logged, and the one that
-			# did not - this placement - is exactly where the trail went cold.
-			var ab := rv.get_aabb()
-			Log.info("[High-Poly] river surface placed: %d surface(s), AABB %s, visible %s, in tree %s"
-				% [(rv.mesh as Mesh).get_surface_count(), str(ab), str(rv.visible),
-				   str(rv.is_inside_tree())])
-			continue
-		if not wcfg.has("height"): continue
-		var wc: Array = wcfg.get("center", [0.0, 0.0])
-		var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
-		# THE NATIVE SEA IS TILED LIKE UNREAL'S: the shared 16x16-quad patch
-		# placed by the core's water draw tree (bf6_water_draw_tree), refined
-		# around the camera by the simulation driver. A uniform plane put a
-		# vertex every ~10 m everywhere, so the 12 m and 43 m cascades aliased
-		# into the fast boiling look instead of the broad swell Unreal draws.
-		if textured and bool(wcfg.get("native", false)):
-			var nmat := HighpolyNativeWater.material(wcfg, game_source.native_environment())
-			if nmat != null:
-				native_materials.append(nmat)
-				var tiled := HighpolyNativeWater.tiled_surface(
-					Vector2(float(wc[0]), float(wc[1])), Vector2(float(wsz[0]), float(wsz[1])),
-					float(wcfg.get("yaw", 0.0)), float(wcfg["height"]), nmat)
-				tiled.name = WATER_NODE
-				tiled.layers = EXT_TERRAIN_LAYER
-				ctx.add_child(tiled); tiled.owner = null
-				continue
-		var wp := MeshInstance3D.new()
-		wp.name = WATER_NODE
-		var pm := PlaneMesh.new()
-		pm.size = Vector2(float(wsz[0]), float(wsz[1]))
-		if bool(wcfg.get("native", false)):
-			pm.subdivide_width = clampi(int(ceil(pm.size.x / 8.0)), 1, 512)
-			pm.subdivide_depth = clampi(int(ceil(pm.size.y / 8.0)), 1, 512)
-		wp.mesh = pm
-		if bool(wcfg.get("native", false)):
-			# Vertex displacement can lift a buried material plane to a lake's
-			# actual height. Include the native heightfield bounds in culling.
-			var water_grid: Dictionary = game_source.native_environment().water_height
-			var low := float(wcfg.height) - 16.0
-			var high := float(wcfg.height) + 16.0
-			if bool(water_grid.get("present", false)):
-				low = minf(low, float(water_grid.world_min[1]) - 16.0)
-				high = maxf(high, float(water_grid.world_max[1]) + 16.0)
-			wp.custom_aabb = AABB(Vector3(-pm.size.x * 0.5 - 16.0, low - float(wcfg.height), -pm.size.y * 0.5 - 16.0),
-				Vector3(pm.size.x + 32.0, high - low, pm.size.y + 32.0))
-		# Water follows the Detail Mode like everything else. Textured gets the
-		# BF6-style animated shader (depth-tinted transparency, fresnel and
-		# ripples, see water.gdshader). The study modes get plain translucent
-		# blue: a moving, reflective ocean in a flat-colour or clay view reads as
-		# the one thing in the scene that is "finished", which is misleading when
-		# the point of those modes is to look at shape.
-		# The game source goes in so the water can bind the map's OWN foam and
-		# ripple-normal textures out of the install (HighpolyWater._apply_game_look).
-		# Passing null is not an error - the mined colours ride in wcfg and apply
-		# either way; only the textures need a live mount.
-		var wmat: Material = null
-		if textured and not bool(wcfg.get("native", false)):
-			wmat = HighpolyWater.material(wcfg, game_source)
-		if textured and bool(wcfg.get("native", false)):
-			wmat = HighpolyNativeWater.material(wcfg, game_source.native_environment())
-			if wmat != null: native_materials.append(wmat)
-		if wmat == null:
-			var fb := StandardMaterial3D.new()
-			fb.albedo_color = WATER_COLOR
-			fb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			fb.metallic = 0.3
-			fb.roughness = 0.1
-			fb.cull_mode = BaseMaterial3D.CULL_DISABLED
-			wmat = fb
-		wp.material_override = wmat
-		wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
-		wp.rotation.y = float(wcfg.get("yaw", 0.0))   # rotated river/lake quads keep their bearing
-		wp.layers = EXT_TERRAIN_LAYER    # tag: already carries its ground look
-		ctx.add_child(wp); wp.owner = null
-	if not native_materials.is_empty():
-		HighpolyNativeWater.attach(wroot, game_source.native_environment(), native_materials)
-
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
 # (row-major, little-endian). Built at `terrain_step` metres/vertex as a grid of
@@ -5584,8 +5202,10 @@ var _us_tile_build := 0
 var _us_tile_lods := 0
 var _us_tile_skirt := 0
 var _us_tile_save := 0
+var _terrain_from_cache := false   # the last terrain mesh came from its .res
 
 func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
+	_terrain_from_cache = false
 	var step: int = maxi(1, _step_for(meta))
 	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
 	# anyone with a v1 cache would keep their inside-out terrain forever â€” the
@@ -5614,7 +5234,9 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
 			var inst := (cached as PackedScene).instantiate()
-			if inst is Node3D: return inst as Node3D
+			if inst is Node3D:
+				_terrain_from_cache = true
+				return inst as Node3D
 	var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
 	if raw.is_empty(): return null
 	var res: int = int(meta.get("res", 4097))
@@ -6341,60 +5963,13 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 	# phase table rather than appending to whatever the last full apply left
 	# behind and reporting a wall time measured from minutes ago.
 	#
-	# NOT WHILE SOMETHING IS STILL BUILDING. Switching Water on during a props
+	# NOT WHILE SOMETHING IS STILL BUILDING. Switching a layer on during a props
 	# build would otherwise wipe the props lane's yield history halfway through
 	# and report the second half as the whole build, which is exactly the kind
 	# of quietly wrong number this table exists to replace.
 	if not _building and _hidden_builds.is_empty():
 		_ph_reset()
 	match layer:
-		"water":
-			# THE NODE EXISTING IS NOT PROOF IT MATCHES THE DATA. A session
-			# that built Water before a reader fix kept SHOWING the stale node
-			# through every later toggle - the early return here was the last
-			# of the doors that held the block-2 river invisible without a
-			# restart. Two corrections in one: the data is re-asked with water
-			# actually WANTED (_load_data above ran with _show_water still
-			# false, since the chip flips it after this call), and the built
-			# node is compared against the answer by body count - a mismatch
-			# rebuilds instead of shows.
-			_show_water = true
-			if game_source != null and game_source.level == map.to_lower():
-				var wd: Dictionary = game_source.map_data(dir, {
-					"lights": want_lights, "fx": want_fx, "water": true})
-				if not wd.is_empty():
-					_data = wd
-			var bodies_v: Variant = (_data as Dictionary).get("water", []) \
-				if _data is Dictionary else []
-			var nbod := 0
-			if bodies_v is Dictionary:
-				nbod = 1
-			elif bodies_v is Array:
-				nbod = (bodies_v as Array).size()
-			var wn := ctx.get_node_or_null("Water")
-			var built_bodies := 0
-			if wn != null:
-				for child in wn.get_children():
-					if child is MeshInstance3D:
-						built_bodies += 1
-			# The native simulation driver is also a child. It is not another
-			# water body and must not force a rebuild on every visibility toggle.
-			if wn != null and built_bodies == nbod and nbod > 0:
-				return true                # already there AND current: just flip
-			if wn != null:
-				# renamed before the free so _add_water_plane's fresh node does
-				# not collide with a queue_free'd sibling still holding "Water"
-				wn.name = "_WaterStale"
-				wn.queue_free()
-			var _t_w := Time.get_ticks_msec()
-			_add_water_plane(ctx, textured)
-			_ph("water: build the surface", Time.get_ticks_msec() - _t_w, 1,
-				PH_INSTALL)
-			# Built and shown: the SDK's flat plane would fight it from here on.
-			set_sdk_water_hidden(root, _show_water
-				and ctx.get_node_or_null("Water") != null)
-			log_water_state("the water surface was just built", root)
-			return ctx.get_node_or_null("Water") != null
 		"backdrop":
 			if ctx.get_node_or_null("Backdrop") != null:
 				return true
@@ -6497,11 +6072,9 @@ func reskin(root: Node, tex_mode: int) -> bool:
 				mmi.material_override = null if textured else flat
 				mmi.layers = TEXTURED_LAYER if textured else 1
 				n_mm += 1
-			elif c is MeshInstance3D and c.name != WATER_NODE:
-				# terrain tiles; water keeps its own material either way
+			elif c is MeshInstance3D:
+				# terrain tiles
 				var mi := c as MeshInstance3D
-				if mi.get_parent() != null and String(mi.get_parent().name) == "Water":
-					continue
 				mi.material_override = tmat if (textured and tmat != null) else green_tiled
 				n_ti += 1
 	_ctx_tex_mode = tex_mode
@@ -6651,8 +6224,8 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material,
 	mmi.set_meta("lod_sz", _sz)     # so the Range slider can re-derive these live
 	# props/backdrop CAST shadows (the flat no-shadow overlay was an old
 	# study-mode perf choice â€” with game lighting it read as "shadows don't
-	# render"). Follows the dock's Shadows sub-checkbox so meshes built while
-	# it's unchecked stay light. Grass scatter is always shadow-off (GPU cost).
+	# render"). Follows HighpolyLib.cast_shadows, the one shadow rule placed
+	# overlays use too. Grass scatter is always shadow-off (GPU cost).
 	#
 	# SIZE-AWARE, because shadows were the largest single cost measured. A
 	# casting surface is redrawn once per directional cascade, so its real price
@@ -6666,7 +6239,7 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material,
 	# boundary the HLOD tiers and the placed-object cull already use, so there is
 	# one notion of "big enough to matter" rather than three.
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
-		if (HighpolyLighting.cast_shadows and _sz >= SHADOW_MIN_EXTENT) \
+		if (HighpolyLib.cast_shadows and _sz >= SHADOW_MIN_EXTENT) \
 		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# VISIBILITY RANGES (Godot's per-instance HLOD): small props stop being
 	# drawn long before the Range slider would cull their cell â€” the single
@@ -7141,7 +6714,7 @@ func _bake_hlod(props_root: Node3D) -> void:
 	decal_progress.emit("", 0, 0)
 	HighpolyVitals.crumb("idle, nothing building")
 	_ph("props: merge cells to cut draw calls",
-		Time.get_ticks_msec() - t0, maxi(1, done), PH_CACHE)
+		Time.get_ticks_msec() - t0, maxi(1, done), PH_ENGINE)
 	if done == 0:
 		Log.info("Draw calls: no prop cell was worth merging on this map.")
 		return
@@ -7720,7 +7293,7 @@ func _apply_radius(budget: int = 1 << 30, only_new := false) -> void:
 		# lights on, whole-map casting was THE lag). 350 m covers everything
 		# a shadow is visible on at street scale.
 		var casts: bool = near and dist <= 350.0 + half_diag \
-			and HighpolyLighting.cast_shadows
+			and HighpolyLib.cast_shadows
 		# Read the cell's INTENDED shadow state, not lst[0]'s actual one. The
 		# two are no longer the same thing: _build_mmi() only lets a mesh cast
 		# if it is at least SHADOW_MIN_EXTENT across, so a cell whose first

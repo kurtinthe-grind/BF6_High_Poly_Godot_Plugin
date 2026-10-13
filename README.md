@@ -1,3 +1,121 @@
+## Fork changes (kurtinthe-grind)
+
+This fork is based on **2.8.0** of
+[TabbedScamper/BF6_High_Poly_Godot_Plugin](https://github.com/TabbedScamper/BF6_High_Poly_Godot_Plugin).
+It trims features, fixes save and scene-switch bugs, and changes how caching
+works. The original 2.8.0 README follows this section unchanged. Where the two
+disagree, this section describes the fork.
+
+### Removed
+
+- **Splash, logo and wave video.** The custom font and the Season 4 styling
+  are gone too. The panel uses the Godot editor theme.
+- **Self-update.** There is no "Update Plugin" or "Check for updates" button
+  and no live reload. The plugin makes no network requests. Fork updates come
+  from this repository, so ignore *Staying up to date* and *Live reload* below.
+- **Object Library icon swap.** The Object Library shows the SDK's own icons.
+  The plugin no longer uses `user://highpoly/thumbs`, and the plugin deletes
+  that folder.
+- **Soldier, loadout, vehicle and gameplay previews.** Spawners keep the SDK
+  marker, and the Loadout inspector is gone.
+- **Benchmark harnesses.** The autorun and flight benchmarks are removed.
+  **Record performance** in the Log section remains.
+- **Plugin water.** There is no Water chip and no plugin water surface. The
+  map's own SDK water plane always shows.
+- **Variant gameplay nodes.** The Variant dropdown only switches the map's
+  layers. It adds no game-mode nodes to your scene.
+- **FX and lighting options.** There are no FX emitters and no Lighting,
+  Shadows, Interior light, Map lights or Prop Lighting controls. The editor's
+  own preview sun and environment light the scene. **Ground photo** remains in
+  Map Context.
+- **The BF6 menu bar entry and the floating "High-Poly Tools" window.** The
+  3D-toolbar button and float/dock switching are also gone. Every action that
+  was in the menu is now on the panel.
+
+### Added and fixed
+
+- **Editor-themed panel with clear states.** An ON chip has an accent fill and
+  a tick. An OFF chip is flat with an outline and an empty box. Hover and
+  keyboard focus are visible, and disabled controls are dimmed. Section headers
+  show ▸/▾ and work from the keyboard.
+- **The panel is a permanent dock tab.** The **High-Poly** tab is in the
+  right-hand dock column (lower slot) from the moment the plugin is enabled.
+  You can drag it to any dock slot, and the editor remembers where.
+- **On-demand caching for the open map only.** Nothing runs when the editor
+  starts. There is no caching screen, no background worker and no lock. The
+  row at the top of the panel shows whether the open map is cached and offers
+  **Cache this map** (with **Cancel**). Only that map is cached. The optional
+  **Auto-cache** chip (off by default) caches the open map before a High-Poly
+  or map-layer build. An uncached map still builds; it reads from your install
+  the first time.
+- **Per-map geometry and texture cache packs.** The packs are
+  `user://bf6_geom/<map>…/` and `user://bf6_tex/<map>…/`. The first build of a
+  map writes them, and later builds of that map read meshes and textures from
+  them instead of the install. They are no longer deleted at launch. Damaged
+  segments are dropped and rebuilt.
+- **Narrower cache keys.** The ground packets, splat, heightfield, texture
+  order and texture caches are each keyed on the code that produces them. An
+  update that only touches the panel no longer invalidates them. The native
+  heightfield is read back from cache instead of being decoded on every open.
+- **The save guard no longer re-swaps.** On Ctrl+S the scene is put back to
+  stock for the save and restored in the same frame. It no longer starts the
+  "Swapping placed objects" job. A swap that the save interrupted is
+  restarted. Variant and door state stays in memory and is never written into
+  your `.tscn` (no `hp_variant` / `hp_door_open`).
+- **Scene switches use the editor's `scene_changed` signal.** The 0.5 s poll
+  is no longer used, so a Save All right after a tab switch writes a stock file.
+- **Freeze logging.** A freeze during the swap job is logged as "swapping
+  placed objects", not "idle". Any placed object that takes over a second is
+  logged by name. Scene-switch teardown and post-build work are timed in the
+  session log.
+- **Remove outdated caches** (Storage section). After you confirm, it deletes
+  superseded index files, older geometry and texture packs (keeping the newest
+  per map), old temp logs and stale caching job files.
+- **Other optimizations.** A repeat swap pass skips props whose look has not
+  changed. The texture read-ahead learns its misses. Type layouts are kept
+  across map opens. Kept precache records are evicted in O(1). Storage usage
+  is measured only while the Storage section is open. The log says "cache"
+  only for a real hit.
+
+### Testing
+
+```
+python tools/run_fork_tests.py
+```
+
+Set `GODOT_BIN` to the SDK's Godot 4.6 executable. The runner checks the
+static removal and fix rules, runs every `tools/forktests/test_*.gd` in a
+throwaway project, gates every script and shader, and runs a headless editor
+smoke test with the plugin enabled in a sandbox project. It must end with
+`FORK TESTS PASSED`. Also run `python tools/sync_shared_menu.py --check` and
+`python tools/sync_cache_dependencies.py`. Neither touches your live SDK
+project or its `user://` folder.
+
+### Manual checks still pending
+
+These need the real editor and a Battlefield 6 install. Try them in a sandbox
+copy of the SDK project first. The full tables are in the owner's
+verification notes, `2026-10-12-verification.md` sections 4, 4.1 and 4.2. That
+file is not in this repository.
+
+- **General smoke (M1–M9, M15).** The editor starts with no script errors. The
+  panel looks plain, with no update controls, network traffic, custom icons,
+  Loadout panel, Water chip or variant nodes. The map state restores after a
+  restart.
+- **Bug fixes (M10–M14).** Ctrl+S, including during a swap, writes a stock
+  `.tscn` with no swap bar. Save All and close-and-save across tabs leave stock
+  files. Freeze lines name the swap. Variant and door state is never saved.
+  Remove outdated caches lists only superseded items.
+- **UI, dock and caching (U1–U11).** There is no BF6 menu, toolbar button or
+  start-up caching. Chip and header states are visible. The dock tab stays
+  where you put it. An uncached map builds cold, and Cache this map caches
+  only that map. A second build is served from the packs: look for the
+  `cache packs for …` log line and a lower wall time. The heightfield is read
+  back. A UI-only edit leaves the ground packets alone. The scene-switch
+  timing line appears. Auto-cache works.
+
+---
+
 # BF6 High-Poly Preview (Portal SDK plugin)
 
 Build Battlefield 6 Portal maps in the SDK's Godot editor while seeing the

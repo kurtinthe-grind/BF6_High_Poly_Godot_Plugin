@@ -1,3 +1,15 @@
+> **Fork note (2026-10-12, `feature/ui-dock-caching`): this page describes the
+> retired launch-time cache.** Caching is now on demand and for the open map
+> only. Nothing runs when Godot starts; the High-Poly panel shows whether the
+> open map is cached and offers **Cache this map** (game cache + map index for
+> that map, progress in the panel, no cover screen, nothing locked). An opt-in
+> **Auto-cache** chip caches the open map when High-Poly or a map layer is
+> turned on. The geometry and texture packs that make later builds fast are
+> written by the first in-editor build of the map. The cover screen
+> (`highpoly_preparation_screen.gd`) and `tools/test_preparation_supervisor.gd`
+> are deleted; `tools/forktests/test_preparation_on_demand.gd` covers the new
+> service. `prepare_levels(levels)` caches only the first map it is given.
+
 # Up-front cache
 
 High Poly caches everything once, up front, so any map opens with High Poly

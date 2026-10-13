@@ -5,7 +5,7 @@ func _init() -> void:
 
 func run() -> void:
 	var failures: Array[String] = []
-	for name in ["bf6_environment", "highpoly_native_terrain", "highpoly_native_water",
+	for name in ["bf6_environment", "highpoly_native_terrain",
 		"highpoly_gamesource", "highpoly_mapcontext", "highpoly_scatter", "highpoly_toggle"]:
 		var script: GDScript = load("res://addons/highpoly_toggle/" + name + ".gd")
 		if script == null or not script.can_instantiate(): failures.append("script compile: " + name)

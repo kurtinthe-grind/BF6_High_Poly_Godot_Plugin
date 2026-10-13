@@ -30,7 +30,7 @@ The EditorPlugin / UI layer. `_enter_tree` runs L534-L1985 (~1450 lines) and is 
 
 **L2319-L2420 — Soft-reopen UI capture/restore.** `_capture_ui()` L2334, `_apply_ui(d)` L2353, `_ui_chips()` L2411.
 
-**L2422-L2711 — Soft reopen, live reload, "Check for updates".** `PLUGIN_NAME` L2452, `_reopen_panel()` L2464, `_keep_service/_take_service` L2475/L2490, `_hot_reload()` L2502 (heal L2530-2536, impact match L2565-2607), `_check_updates_now()` L2623 (staged apply L2640-2665, cold-swap decision L2686-2699).
+**L2422-L2711 — Soft reopen, live reload, "Check for updates".** *(Live reload, `_reopen_panel` and "Check for updates" removed in the fork, F-03.)* `PLUGIN_NAME` L2452, `_reopen_panel()` L2464, `_keep_service/_take_service` L2475/L2490, `_hot_reload()` L2502 (heal L2530-2536, impact match L2565-2607), `_check_updates_now()` L2623 (staged apply L2640-2665, cold-swap decision L2686-2699).
 
 **L2712-L2823 — Window consts, tips, log sink, SDK hide, `_lane`.** `_log_line` L2751 (thread-hops to main L2762), **`_lane(label) -> Callable` L2816 — THE canonical progress-lane factory.**
 
@@ -83,7 +83,7 @@ The ONLY ProgressBar in the addon (grep-verified; the other hits are `highpoly_t
 EditorSettings project metadata: `highpoly/shape_outlines` L816/L3084; `highpoly/open_sections` L3136/L3140; `highpoly/tools_seen` L3357; `highpoly_mapctx/<MAP>` 19-key dict L4320-4353 (dead keys: `maptile`, `optimize`, `_mesh_cache`); `highpoly_mapctx/_shaders` L4206/L1315; `_perf_applied2` L4156.
 ProjectSettings (one-shot, L4150): mesh LOD threshold 4.0, thread_model 2, directional shadow 2048.
 Editor layout ConfigFile: `HighPoly/win_rect|win_open|docked` L3363-3377.
-Env vars: `BF6_MESH_TRACE`, `BF6_PERFRUN` (flightrun), `BF6_AUTORUN`.
+Env vars: `BF6_MESH_TRACE`, `BF6_PERFRUN` (flightrun), `BF6_AUTORUN`. The fork removed the two harnesses (F-05a), so only `BF6_MESH_TRACE` is read now.
 Statics mirrored: `LibScript.detail/build_epoch/game_source`, `MapContextScript.mesh_cache_enabled/colormap_*/show_fx_cards`, `LightingScript.lights_range/interior_fill/prop_lighting/game_source`, `GameSourceScript.prop_emission`, `mapctx.want_lights/want_fx/job_queue/status_label`.
 
 ## Cross-script const reads (fold hazards)

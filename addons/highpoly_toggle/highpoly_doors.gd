@@ -90,8 +90,8 @@ static func toggle(node: Node3D) -> Dictionary:
 	if leaves.is_empty():
 		return {"node": node, "ok": false,
 				"msg": "%s: switch it to High-Poly to swing the door" % key}
-	var opening: bool = not bool(node.get_meta(OPEN_META, false))
-	node.set_meta(OPEN_META, opening)
+	var opening: bool = not bool(HighpolyInstanceState.get_value(node, OPEN_META, false))
+	HighpolyInstanceState.set_value(node, OPEN_META, opening)
 	for leaf in leaves:
 		var l := leaf as Node3D
 		if not l.has_meta("hp_rest_rot"):

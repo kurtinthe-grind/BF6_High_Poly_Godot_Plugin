@@ -27,9 +27,6 @@ const Log = preload("highpoly_log.gd")
 const OWNERS := {
 	"_SCATTER": "grass scatter",
 	"_MAP_CONTEXT": "map context (scenery)",
-	"_MAP_FX": "effects",
-	"_MAP_LIGHTS": "map lights",
-	"_GAME_LIGHTING": "game lighting",
 	"_WATER_CHUNKS": "water",
 	"_COLLISION_VIS": "collision overlay",
 	"_GAMEMODE": "gamemode markers",
@@ -49,7 +46,7 @@ const SHADOW_PASSES := 4      # directional cascades; only counted for casters
 
 # Children of _MAP_CONTEXT that get their own row rather than being pooled.
 const MAPCTX_PARTS := {"Terrain": true, "Backdrop": true, "Props": true,
-	"Roads": true, "Water": true}
+	"Roads": true}
 
 var recording := false
 var _samples: Array = []          # [{t, fps, ms, draws, prims, objs, vram, campos}]

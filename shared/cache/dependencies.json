@@ -32,7 +32,19 @@
       "highpoly_updater.gd",
       "highpoly_log.gd",
       "highpoly_journal.gd",
-      "highpoly_backdrop.gd"
+      "highpoly_backdrop.gd",
+      "highpoly_toggle.gd",
+      "highpoly_cachesweep.gd",
+      "highpoly_census.gd",
+      "highpoly_vitals.gd",
+      "highpoly_profile.gd",
+      "highpoly_profiler.gd",
+      "highpoly_objdebug.gd",
+      "highpoly_diagnose.gd",
+      "highpoly_section.gd",
+      "highpoly_jobs.gd",
+      "highpoly_shapeviz.gd",
+      "highpoly_sleeppark.gd"
     ]
   },
   "unreal": {

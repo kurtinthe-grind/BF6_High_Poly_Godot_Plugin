@@ -47,11 +47,15 @@ Profiler API: `event` :92, `crumbs_begin/crumb/crumbs_end/last_session_end` :192
 `class_name HighpolyVitals`, static, driven by the dock heartbeat (`sample()` toggle:1810). `free_mb` :95, `pressure()` :110 (TIGHT 2048 / CRITICAL 900 MB), `crumb/crumb_is_idle/crumb_age_ms` :158/:172/:186, **`work_tasks(items, cores)` :219 — THE thread policy: min(items, cores-2)**, `tick_long` :228 (10s threshold then Log.flush), `sample` :253 (stall detector = heartbeat lateness, keeps worst 40), `machine` :363, `report` :392. Budgets :85-89: heap 8192 MB, VRAM 5120 MB.
 
 ## highpoly_reload.gd (454) — the staged-deploy law
+> Removed in the fork (F-03).
+
 `class_name HighpolyReload`, static. `STAGED_DIR "user://highpoly/staged"` :90. Rule (:74-89): nothing writes `res://` while the editor is open; deploys stage FLAT `.gd`/`.gdshader` files there.
 "Check for updates" sequence (toggle:2623): GitHub check → if `staged_count() > 0` refuse unless `crumb_is_idle()` (:2642) → `apply_staged()` :113 → `pending()` :194 → any .gd moved = `cold_swap()` :306 (disable plugin, 2 frames, CACHE_MODE_REPLACE, re-enable) else `_hot_reload` (reload_code :225 shaders-first toggle-last, `heal_new_members` :415, `impact()` :384 → materials bumps `LibScript.build_epoch`; geometry refuses).
 `plugin_dir()` :70 duplicated verbatim in updater :227.
 
 ## highpoly_updater.gd (478)
+> Removed in the fork (F-03).
+
 `class_name HighpolyUpdater`, static. `_fetch` :56 (4 attempts, backoff, stall watch `STALL_SECS 45`), `plugin_version` :230, `is_newer_version` :243, `github_latest` :283, `check_plugin_update` :333, `sweep_removed` :371 (`REMOVED_FILES`: highpoly_migrate/sync/jobbars/turbo), `update_plugin` :391 (zip → hash-compare → extract → `cold_swap`). **Dead:** `fetch_to_file` :145 (duplicate of _fetch), `remote_etag` :197.
 
 ## highpoly_store.gd (589)
@@ -74,6 +78,8 @@ Duplicates: `_ray_box` ≡ `HighpolyLib._ray_aabb`; `_collect` another walk.
 `class_name HighpolyCensus`, static; one addon caller (flightrun:625 `take(croot)`). Prices the scene as the GPU charges: surfaces, distinct materials/shaders, casting surfaces × MEASURED cascades (`_directional_cascades` :454), dedup recovery, reconciliation vs the engine draw counter. `report()/lines()` :676/:689 reachable only from tools/. Third scene-walk implementation exists in autorun `_surface_census` :902.
 
 ## highpoly_flightrun.gd (1548) — ★ THE bench harness
+> Removed in the fork (F-05a); its sleep-setting repair lives on in `highpoly_sleeppark.gd`.
+
 `class_name HighpolyFlightRun`, static; only preloads Log (deliberate isolation). Entry toggle:2169: `BF6_PERFRUN` env (path to session JSON or bare tag). Inert when unset. Driven externally by `tools/perfrun.py`.
 Phases: scan :208 → open :247 → dock_sync :300 → configure :315 → build :356 → assert :485 → settle :535 → flight :597 → census :622 → hlod probe/ab :643/:684.
 Asserted rules (:26-38): culling OFF (`NO_CULL_SLIDER 3500`, `mapctx.radius == 1e8` :1111-1126 — failure aborts); headline = `frames_under_60` + 1% low, never the mean (`MS_60/MS_30` absolute :67-68). Refuses headless (:201-206).
@@ -81,6 +87,8 @@ Outputs: report `cfg["out"]` default `user://perfrun_<map>_<tag>.json` :163 (**N
 `_summarise` :832-939: frames_under_60/30, fps_1pct_low, worst_ms(+where), stationary-vs-moving stutter split, draw peaks, full per-frame arrays.
 
 ## highpoly_flightpath.gd (112)
+> Removed in the fork (F-05a).
+
 `class_name HighpolyFlightPath`, static. Records editor camera at 20 Hz → `user://bf6_flightpath_<map>.json` (basis as 9 floats). `start` :39, `stop` :58, `MAX_SAMPLES` 20*60*10. Two consumers parse it with two different parsers (flightrun:1395, autorun:1246).
 
 ## highpoly_gamedir.gd (158)
@@ -92,6 +100,8 @@ Catalogue: `rescan_objects/known/_match_key/match_key_public/scene_keys` :106-22
 Duplication: the "skip our own overlays" predicate inline ×6 while `in_overlay()` exists; 9 stack-walks with the same skeleton; `_ray_aabb` ≡ diagnose `_ray_box`.
 
 ## highpoly_autorun.gd (1327)
+> Removed in the fork (F-05a).
+
 `class_name HighpolyAutorun`, static; `BF6_AUTORUN` env; **~60% duplicate of flightrun** (17 functions duplicated, 5 verbatim: `_scene_for/_find_scene/_windows/_engine/_say`). Unique value: the layer sweep :610-717 (per-layer off + re-fly + delta, incl. engine-floor rows), foliage screenshot :1163, build-rate sampler `_rate` :736. Neither harness is deprecated in code.
 
 ## Cross-file observations

@@ -1,8 +1,8 @@
 # BF6 High-Poly Preview
 
 Editor-only overlays for the BF6 Portal SDK: real high-poly models over the
-low-poly proxies, plus Map Context (full terrain, original object layouts,
-water) and viewport performance tools.
+low-poly proxies, plus Map Context (full terrain and original object
+layouts) and viewport performance tools.
 
 - The **low-poly proxy stays the source of truth** — it's what the `.tscn`
   saves and what the Portal exporter ships. This plugin never modifies it.
@@ -13,44 +13,18 @@ water) and viewport performance tools.
 
 1. Copy this folder to `addons/highpoly_toggle/` in the SDK Godot project.
 2. Enable it under Project → Project Settings → Plugins.
-3. Press **High-Poly Tools** in the 3D viewport toolbar — beside the SDK's own
-   **Apply Texture** button. It opens a floating panel you can move anywhere,
-   including onto a second monitor. Models and map data sync automatically in
-   the background (scene props first) — no other setup.
+3. The **High-Poly** tab appears in the editor's right-hand dock column (the
+   lower slot, below the Inspector) as soon as the plugin is enabled. Drag it
+   to any other dock slot like any editor panel; the editor remembers where.
 
-The panel is a window rather than a dock because level building wants the
-viewport wide, and a permanent right-hand dock costs ~400px of it. Closing the
-panel only hides it: the background sync, map-context builds and downloads all
-keep running. Its position and open/closed state are remembered per project.
-
-The panel offers a one-click **Update Plugin** button whenever a newer plugin
-version is published; model fixes and map-data refreshes arrive on their own.
+Nothing is cached when Godot starts. Open a map and press **Cache this map** in
+the panel to prepare that map only; High-Poly also works on an uncached map
+(the first build reads everything from the install, and later builds reuse the
+geometry and texture packs it writes).
 
 ## Look
 
-Season 4 (Pacific Front) styling: a looping wave backdrop under white controls
-on translucent white masks, inside a bright blue outline. **Every** open plays a
-short boot sequence: waves, then the Portal logo, then the backdrop dims and
-the controls fade in — about five seconds. **Click anywhere to skip it.**
-
-Costs are contained rather than assumed away:
-
-- The video pauses the moment the panel is closed, so a shut panel decodes
-  nothing.
-- It is encoded at 480×800 (0.8 MB), not at source resolution — it sits behind
-  UI at ~28% brightness, so there is nothing to gain from more pixels.
-- The control theme is set on the panel root only. Items it doesn't define fall
-  through to your editor theme, and the rest of the SDK is untouched.
-
-All of it is data, replaceable without a plugin release:
-`theme.json` (palette and backdrop dim), `logo.png` (the flash),
-`waves.ogv` (the backdrop), `ui_font.ttf` (the face).
-Delete any of them and that part is simply skipped — no font falls back to your
-editor's, no video leaves a flat dark panel.
-
-The font keeps a fallback chain (editor font, then Godot's built-in), because a
-display face is cut for headlines and doesn't carry every character a settings
-panel prints.
+The panel uses the Godot editor theme.
 
 ## Viewport double-click
 

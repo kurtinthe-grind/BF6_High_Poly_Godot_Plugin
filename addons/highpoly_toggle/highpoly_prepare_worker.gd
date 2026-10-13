@@ -121,7 +121,7 @@ func _run() -> void:
 			_status("Recording texture order")
 			gs.record_textures = true
 			gs.prepare_geometry_only = false
-			var tdata: Dictionary = gs.map_data("", {"objects": true, "water": false, "lights": false, "fx": false, "edv": false, "sky": false})
+			var tdata: Dictionary = gs.map_data("", {"objects": true, "edv": false})
 			var tprops: Array = tdata.get("props", []).duplicate()
 			tprops.append_array(tdata.get("backdrop", []))
 			var seen := {}
@@ -144,80 +144,8 @@ func _run() -> void:
 			Source.save_texture_order(level, gs.texture_requests)
 		_finish("prepared", "")
 		return
-	var data: Dictionary = gs.map_data("", {"objects": true, "water": false, "lights": false, "fx": false, "edv": false, "sky": false})
-	var props: Array = data.get("props", []).duplicate()
-	props.append_array(data.get("backdrop", []))
-	if props.is_empty() or str(gs._geom_dir).is_empty():
-		_finish("failed", "No cacheable map geometry was found.")
-		return
-	var assets: Dictionary = {}
-	var missing: Array = []
-	var reserve := int(job.get("reserve_bytes", 8 * 1024 * 1024 * 1024))
-	var memory_reserve := maxi(2 * 1024 * 1024 * 1024, int(job.get("memory_reserve_bytes", 4 * 1024 * 1024 * 1024)))
-	var release_batch := 8 if bool(job.get("foreground", false)) else 32
-	var directory := DirAccess.open(gs._geom_dir)
-	var limit := int(job.get("test_limit", 0))
-	report["props_total"] = props.size()
-	report["props_done"] = 0
-	for i in range(props.size()):
-		if _cancelled():
-			_finish("paused", _cancel_reason)
-			return
-		var free_memory := int(OS.get_memory_info().get("free", -1))
-		if free_memory >= 0 and free_memory < memory_reserve:
-			gs.release_caches()
-			_finish("paused", "Preparation stopped to preserve free memory. Close other applications, then resume.")
-			return
-		if directory == null or directory.get_space_left() < reserve:
-			_finish("paused", "Cache preparation stopped to preserve free disk space.")
-			return
-		if limit > 0 and i >= limit:
-			_finish("partial", "Test sample only. This map is not fully prepared.")
-			return
-		var key := str(props[i].get("mesh", ""))
-		_status("Preparing geometry", i, props.size())
-		var saved_before := int(gs.n_geom_saved)
-		var mesh: Mesh = gs.mesh_for(key)
-		if mesh == null:
-			missing.append(key)
-		else:
-			var resource_name := key.get_slice("|", 0)
-			if gs._group_meta.has(key):
-				resource_name = str(gs._group_meta[key][0])
-			var file := str(gs._geom_path("%s#0" % resource_name))
-			var persisted: Resource = ResourceLoader.load(file, "ArrayMesh", ResourceLoader.CACHE_MODE_IGNORE) if FileAccess.file_exists(file) else null
-			var force_saved := not bool(job.get("force", false)) or int(gs.n_geom_saved) > saved_before
-			if force_saved and persisted is ArrayMesh and persisted.get_surface_count() > 0:
-				assets[file] = true
-			else:
-				missing.append(key)
-		mesh = null
-		report["meshes"] = assets.size()
-		report["uncached"] = missing.size()
-		report["props_done"] = i + 1
-		# Drop rendered resources in batches; keep the placement scope table.
-		if i % release_batch == release_batch - 1:
-			var scopes: Dictionary = gs._group_meta.duplicate()
-			gs.release_caches()
-			gs._group_meta = scopes
-			await process_frame
-	_status("Verifying game files")
-	var final := Cache.inspect(install)
-	if not final.get("ok", false) or final.get("identity", "") != initial["identity"] or Cache.recipe(true) != recipe:
-		_finish("stale", "The game changed during preparation. Rebuild against the updated installation.")
-		return
-	if _cancelled():
-		_finish("paused", _cancel_reason)
-		return
-	# Explicit artifacts, so deleting or truncating caches is not mistaken for ready.
-	var files: Array = []
-	for path in assets:
-		var file := FileAccess.open(str(path), FileAccess.READ)
-		if file == null or file.get_length() <= 0:
-			_finish("failed", "A prepared resource could not be verified.")
-			return
-		files.append({"path": path, "bytes": file.get_length()})
-	report["artifacts"] = files
-	report["uncached_assets"] = missing
-	_finish("prepared" if missing.is_empty() else "partial",
-		"" if missing.is_empty() else "%d objects still require live decoding." % missing.size())
+	# Geometry is no longer prepared in a worker: the per-map geometry and
+	# texture packs (highpoly_pack.gd) are written by the editor's own build,
+	# with the editor's VRAM mode and texture cap in their keys. Only index jobs
+	# are sent here.
+	_finish("failed", "Geometry preparation runs in the editor; only index jobs are supported.")
